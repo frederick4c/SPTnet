@@ -2,6 +2,8 @@ import os
 import argparse
 import glob
 import matplotlib
+if 'MPLBACKEND' in os.environ:
+    del os.environ['MPLBACKEND']
 matplotlib.use('Agg')
 from SPTnet_toolbox import *
 from tqdm import tqdm
@@ -77,7 +79,7 @@ def main():
         momentum=0.9,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
-        use_gpu=(args.gpus>0),
+        use_gpu=(args.gpus > 0 and torch.cuda.is_available()),
         image_size=H,
         number_of_frame=n_frames,
         num_queries= args.query,
