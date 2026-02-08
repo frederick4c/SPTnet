@@ -1,9 +1,9 @@
 import os
 import argparse
 import glob
-import matplotlib
 if 'MPLBACKEND' in os.environ:
     del os.environ['MPLBACKEND']
+import matplotlib
 matplotlib.use('Agg')
 from SPTnet_toolbox import *
 from tqdm import tqdm
