@@ -66,8 +66,8 @@ def main():
     if isinstance(filename_train, tuple):
         training_files = list(filename_train)
     else:
-        # In some environments you might actually get a single string
-        training_files = [filename_train]
+        # In this specific case, filename_train is already a list of strings
+        training_files = filename_train
     max_dim = 0
     for fp in training_files:
         with h5py.File(fp, 'r') as f:
