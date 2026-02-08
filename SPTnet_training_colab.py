@@ -41,6 +41,18 @@ def main():
     if not os.path.exists(args.model_dir):
         os.makedirs(args.model_dir)
     full_path = os.path.join(args.model_dir, model_name)
+    print(f"Model will be saved to: {os.path.abspath(full_path)}")
+    
+    # Verify write permissions immediately
+    try:
+        test_file_path = full_path + "_write_test.tmp"
+        with open(test_file_path, 'w') as f:
+            f.write("Write test successful.")
+        os.remove(test_file_path)
+        print("✅ Write check passed: Output directory is writable.")
+    except Exception as e:
+        print(f"❌ Write check failed: Cannot write to {os.path.abspath(full_path)}")
+        raise RuntimeError(f"Output directory is not writable: {e}")
 
     if args.gpus > 0 and torch.cuda.is_available():
         device = torch.device('cuda')
@@ -86,9 +98,12 @@ def main():
         diff_max = args.max_dc
     )
 
-    for file in filename_train:
+    print(f"Loading training data from {len(training_files)} files...")
+    for i, file in enumerate(training_files):
+        print(f"Processing file {i+1}/{len(training_files)}: {file}")
         datafile = spt.Transformer_mat2python(SPTnet_toolbox=spt, dataset_path=file)
         data_train = torch.utils.data.ConcatDataset([data_train,datafile])
+    print(f"Data loading complete. Total samples: {len(data_train)}")
     spt.data_loader(data_train, [int(len(data_train)*0.8), int(len(data_train)*0.2)])  # train_set, data_test, split training data for validation [train, val].
     file_path = os.path.join(os.path.dirname(__file__), 'CRLB_H_D_frame.mat')
     if not os.path.isfile(file_path):
@@ -213,13 +228,14 @@ def main():
         v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = v_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
-    #torch.backends.cudnn.benchmark = True  # use the fastest convolution methods when the inputs size are fixed improves performance
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True  # use the fastest convolution methods when the inputs size are fixed improves performance
+    #torch.backends.cudnn.benchmark = False
     #torch.use_deterministic_algorithms(True)
     criterion_mae = nn.L1Loss(reduction='none').to(device)
     pdist = nn.PairwiseDistance(p=2)
     transformer3d = Transformer3d(d_model=256,dropout=0,nhead=8,dim_feedforward=1024,num_encoder_layers=6,num_decoder_layers=6,normalize_before=False)
     transformer = Transformer(d_model=256,dropout=0,nhead=8,dim_feedforward=1024,num_encoder_layers=6,num_decoder_layers=6,normalize_before=False)
+    print("Initializing model...")
     model = spt.SPTnet(num_classes=1, num_queries=spt.num_queries, num_frames=spt.number_of_frame, spatial_t=transformer,
                        temporal_t=transformer3d, input_channel=512).to(device)
     torch.autograd.set_detect_anomaly(True)
@@ -267,6 +283,7 @@ def main():
     fig, ax = plt.subplots(nrows=2,ncols=3)
     while no_improvement < max_num_of_epoch_without_improving:
     # for epoch in range(n_epochs):
+        print(f"Starting Epoch {epoch}...")
         epoch_list.append(epoch)
         t_loss_total = 0
         t_loss_total_cls = 0
@@ -315,6 +332,7 @@ def main():
         v_loss_epoch_hurst = v_loss_total_hurst / (batch_idx + 1)
         v_loss_epoch_diff = v_loss_total_diff / (batch_idx + 1)
         v_loss_epoch_bg = v_loss_total_bg / (batch_idx + 1)
+        print(f"Finished validation for Epoch {epoch}. Loss: {v_loss_epoch:.4f}")
 
         if v_loss_epoch < min_v_loss:
             min_v_loss = v_loss_epoch
