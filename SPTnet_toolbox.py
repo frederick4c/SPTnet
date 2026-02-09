@@ -363,9 +363,9 @@ class SPTnet_toolbox(object):
             return class_logits,center_pred,H_est,D_est
 
 
-############## test_attentionSPT ################################################
+    ############## test_attentionSPT ################################################
     def inference_with_SPTnet(self, model, testdata):
-        model.load_state_dict(torch.load(self.path_saved_model),strict=False)
+        model.load_state_dict(torch.load(self.path_saved_model, map_location=self.device),strict=False)
         model.eval()
         total = 0
         total_obj_est = []
