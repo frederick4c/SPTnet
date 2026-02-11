@@ -274,10 +274,146 @@ def main():
         if args.gpus > 1:
             model = nn.DataParallel(model, device_ids=list(range(args.gpus)))
 
-    # [rest of training loop same as original, omitted for brevity in this response but copied with minor fixes like .item(), device placement]
-    # Note: The full training loop, logging, plotting is identical to original with AMP integration and fixes for NaN/device.
-    # Early stopping, loss tracking, etc. unchanged.
-    # Training complete, model saved at full_path
+    # Full optimized training loop (AMP, device safe, plots, early stop)
+    t_loss_append = []
+    t_loss_epoch_cls_append = []
+    t_loss_epoch_coor_append = []
+    t_loss_epoch_hurst_append = []
+    t_loss_epoch_diff_append = []
+    t_loss_epoch_bg_append = []
+    v_loss_append = []
+    v_loss_epoch_cls_append = []
+    v_loss_epoch_coor_append = []
+    v_loss_epoch_hurst_append = []
+    v_loss_epoch_diff_append = []
+    v_loss_epoch_bg_append = []
+    epoch_list = []
+    no_improvement = 0
+    min_v_loss = float('inf')
+    max_num_of_epoch_without_improving = 6
+    epoch = 1
+    start = time.time()
+    lr = []
+    log_path = spt.path_saved_model + '_training_log.txt'
+    modelrecord = open(log_path, 'w')
+    fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(15,10))
+    while no_improvement < max_num_of_epoch_without_improving:
+        epoch_list.append(epoch)
+        t_loss_total = 0
+        t_loss_total_cls = 0
+        t_loss_total_coor = 0
+        t_loss_total_hurst = 0
+        t_loss_total_diff = 0
+        t_loss_total_bg = 0
+        pbar = tqdm(spt.train_dataloader, desc=f'Epoch {epoch}')
+        for batch_idx, data in enumerate(spt.train_dataloader):
+            t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = train_step(batch_idx, data)
+            t_loss_total += t_loss
+            t_loss_total_cls += cl_ls
+            t_loss_total_coor += coor_ls
+            t_loss_total_hurst += h_ls
+            t_loss_total_diff += diff_ls
+            t_loss_total_bg += bg_ls
+            pbar.set_postfix({'loss': f'{t_loss:.4f}'})
+        pbar.close()
+        t_loss_epoch = t_loss_total / len(spt.train_dataloader)
+        t_loss_epoch_cls = t_loss_total_cls / len(spt.train_dataloader)
+        t_loss_epoch_coor = t_loss_total_coor / len(spt.train_dataloader)
+        t_loss_epoch_hurst = t_loss_total_hurst / len(spt.train_dataloader)
+        t_loss_epoch_diff = t_loss_total_diff / len(spt.train_dataloader)
+        t_loss_epoch_bg = t_loss_total_bg / len(spt.train_dataloader)
+        # Validation
+        v_loss_total = 0
+        v_loss_total_cls = 0
+        v_loss_total_coor = 0
+        v_loss_total_hurst = 0
+        v_loss_total_diff = 0
+        v_loss_total_bg = 0
+        for batch_idx, data in enumerate(spt.val_dataloader):
+            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = val_step(batch_idx, data)
+            v_loss_total += v_loss
+            v_loss_total_cls += cl_ls
+            v_loss_total_coor += coor_ls
+            v_loss_total_hurst += h_ls
+            v_loss_total_diff += diff_ls
+            v_loss_total_bg += bg_ls
+        v_loss_epoch = v_loss_total / len(spt.val_dataloader)
+        v_loss_epoch_cls = v_loss_total_cls / len(spt.val_dataloader)
+        v_loss_epoch_coor = v_loss_total_coor / len(spt.val_dataloader)
+        v_loss_epoch_hurst = v_loss_total_hurst / len(spt.val_dataloader)
+        v_loss_epoch_diff = v_loss_total_diff / len(spt.val_dataloader)
+        v_loss_epoch_bg = v_loss_total_bg / len(spt.val_dataloader)
+        print(f'Epoch {epoch}: Train {t_loss_epoch:.4f}, Val {v_loss_epoch:.4f}')
+        if v_loss_epoch < min_v_loss:
+            min_v_loss = v_loss_epoch
+            no_improvement = 0
+            if hasattr(model, 'module'):
+                torch.save(model.module.state_dict(), full_path)
+            else:
+                torch.save(model.state_dict(), full_path)
+            torch.save(optimizer.state_dict(), optimizer_path)
+            print('==> New best model saved')
+        else:
+            no_improvement += 1
+        lr.append(optimizer.param_groups[0]['lr'])
+        print(f'LR: {lr[-1]:.2e}')
+        # Update plots (total)
+        t_loss_append.append(t_loss_epoch)
+        v_loss_append.append(v_loss_epoch)
+        ax[0,0].clear()
+        ax[0,0].plot(epoch_list, t_loss_append, 'r-', lw=2, label='Train')
+        ax[0,0].plot(epoch_list, v_loss_append, 'b-', lw=2, label='Val')
+        ax[0,0].set_title('Total Loss')
+        ax[0,0].legend()
+        modelrecord.write(f'\nepoch {epoch}, t_loss: {t_loss_epoch}, v_loss: {v_loss_epoch}')
+        # CLS
+        t_loss_epoch_cls_append.append(t_loss_epoch_cls)
+        v_loss_epoch_cls_append.append(v_loss_epoch_cls)
+        ax[0,1].clear()
+        ax[0,1].plot(epoch_list, t_loss_epoch_cls_append, 'r-', lw=2)
+        ax[0,1].plot(epoch_list, v_loss_epoch_cls_append, 'b-', lw=2)
+        ax[0,1].set_title('Class Loss')
+        modelrecord.write(f', t_cls: {t_loss_epoch_cls}, v_cls: {v_loss_epoch_cls}')
+        # Coor
+        t_loss_epoch_coor_append.append(t_loss_epoch_coor)
+        v_loss_epoch_coor_append.append(v_loss_epoch_coor)
+        ax[0,2].clear()
+        ax[0,2].plot(epoch_list, t_loss_epoch_coor_append, 'r-', lw=2)
+        ax[0,2].plot(epoch_list, v_loss_epoch_coor_append, 'b-', lw=2)
+        ax[0,2].set_title('Coord Loss')
+        modelrecord.write(f', t_coor: {t_loss_epoch_coor}, v_coor: {v_loss_epoch_coor}')
+        # Hurst
+        t_loss_epoch_hurst_append.append(t_loss_epoch_hurst)
+        v_loss_epoch_hurst_append.append(v_loss_epoch_hurst)
+        ax[1,0].clear()
+        ax[1,0].plot(epoch_list, t_loss_epoch_hurst_append, 'r-', lw=2)
+        ax[1,0].plot(epoch_list, v_loss_epoch_hurst_append, 'b-', lw=2)
+        ax[1,0].set_title('Hurst Loss')
+        modelrecord.write(f', t_hurst: {t_loss_epoch_hurst}, v_hurst: {v_loss_epoch_hurst}')
+        # Diff
+        t_loss_epoch_diff_append.append(t_loss_epoch_diff)
+        v_loss_epoch_diff_append.append(v_loss_epoch_diff)
+        ax[1,1].clear()
+        ax[1,1].plot(epoch_list, t_loss_epoch_diff_append, 'r-', lw=2)
+        ax[1,1].plot(epoch_list, v_loss_epoch_diff_append, 'b-', lw=2)
+        ax[1,1].set_title('Diffusion Loss')
+        modelrecord.write(f', t_diff: {t_loss_epoch_diff}, v_diff: {v_loss_epoch_diff}')
+        # BG
+        t_loss_epoch_bg_append.append(t_loss_epoch_bg)
+        v_loss_epoch_bg_append.append(v_loss_epoch_bg)
+        ax[1,2].clear()
+        ax[1,2].plot(epoch_list, t_loss_epoch_bg_append, 'r-', lw=2)
+        ax[1,2].plot(epoch_list, v_loss_epoch_bg_append, 'b-', lw=2)
+        ax[1,2].set_title('BG Loss')
+        modelrecord.write(f', t_bg: {t_loss_epoch_bg}, v_bg: {v_loss_epoch_bg}')
+        plt.tight_layout()
+        plt.savefig(spt.path_saved_model + 'learning_curve.png')
+        plt.close(fig)  # Prevent memory leak
+        epoch += 1
+    end = time.time()
+    print("Training complete in {:.1f}s. Best val loss: {:.4f}".format(end - start, min_v_loss))
+    modelrecord.write('\nTrained {} epochs. Min val loss: {:.4f}\n'.format(epoch, min_v_loss))
+    modelrecord.close()
 
 if __name__ == '__main__':
     main()
