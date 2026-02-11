@@ -217,7 +217,7 @@ def main():
             img_max = inputs[i, 0].max()
             img_min = inputs[i, 0].min()
             inputs[i, 0] = (inputs[i, 0] - img_min) / (img_max - img_min + 1e-8)
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast('cuda', enabled=scaler is not None):
             class_out, center_out, H_out, C_out = model(inputs)
             class_out, H_out, C_out = class_out.squeeze(-1), H_out.squeeze(-1), C_out.squeeze(-1)
             class_label = class_label.float().to(device)
@@ -237,7 +237,7 @@ def main():
 
     def val_step(batch_idx, data):
         model.eval()
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=scaler is not None):
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=scaler is not None):
             inputs, Hlabel, Clabel, position_label, class_label = data['video'], data['Hlabel'], data['Clabel'], data['position'], data['class_label']
             inputs = torch.unsqueeze(inputs, 1).float().to(device)
             for i in range(inputs.shape[0]):
@@ -255,8 +255,7 @@ def main():
 
     torch.backends.cudnn.benchmark = True
     criterion_mae = nn.L1Loss(reduction='none').to(device)
-    pdist = nn.PairwiseDistance(p=2)
-    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() and args.gpus > 0 else None
+    scaler = torch.amp.GradScaler('cuda') if torch.cuda.is_available() and args.gpus > 0 else None
     transformer3d = Transformer3d(d_model=256, dropout=0, nhead=8, dim_feedforward=1024, num_encoder_layers=6, num_decoder_layers=6, normalize_before=False)
     transformer = Transformer(d_model=256, dropout=0, nhead=8, dim_feedforward=1024, num_encoder_layers=6, num_decoder_layers=6, normalize_before=False)
     print("Initializing model...")
