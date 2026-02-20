@@ -11,13 +11,16 @@ from tqdm import tqdm
 # from tkinter.filedialog import askopenfilename
 # from tkinter.filedialog import askdirectory
 from scipy.optimize import linear_sum_assignment
-from torch.autograd import Variable
 import torch.profiler
 from transformer import *
 from transformer3d import *
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 torch.cuda.empty_cache()
 device = torch.device('cuda:0')
+
+# --- Ampere / Turing GPU optimizations ---
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 current_folder = os.path.dirname(os.path.abspath(__file__))
 
@@ -196,36 +199,42 @@ def main():
         model.train()
         inputs, Hlabel, Clabel, position_label, class_label = data['video'], data['Hlabel'], data['Clabel'], data['position'], data['class_label']
         inputs = torch.unsqueeze(inputs, 1).float().cuda() # float64 is actually "double"
-        for i in range(0, spt.batch_size):
-            image_max = inputs[i][0].max()
-            image_min = inputs[i][0].min()
-            inputs[i][0] = ((inputs[i][0])-image_min) / (image_max-image_min)
+        # Vectorized per-sample min-max normalization across the batch
+        img = inputs[:, 0]  # (B, T, H, W)
+        mins = img.reshape(img.shape[0], -1).min(dim=1).values[:, None, None, None]
+        maxs = img.reshape(img.shape[0], -1).max(dim=1).values[:, None, None, None]
+        inputs[:, 0] = (img - mins) / (maxs - mins)
 
-        class_out, center_out, H_out, C_out = model(inputs)  # class out [batch, frames, queries, 1]  center out [batch, frames,queries, 2]
-        class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
         class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
-        t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
-        optimizer.zero_grad()
-        t_loss.backward()
-        optimizer.step()
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.amp.autocast('cuda'):
+            class_out, center_out, H_out, C_out = model(inputs)  # class out [batch, frames, queries, 1]  center out [batch, frames,queries, 2]
+            class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
+            t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
+        scaler.scale(t_loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = t_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
         return t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
     def val_step(batch_idx, data):
         model.eval()
-        inputs, Hlabel, Clabel, position_label, class_label = data['video'], data['Hlabel'], data['Clabel'], data['position'], data['class_label']
-        inputs = torch.unsqueeze(inputs, 1).float().cuda() # float64 is actually "double"
-        for i in range(0, spt.batch_size):
-            image_max = inputs[i][0].max()
-            image_min = inputs[i][0].min()
-            inputs[i][0] = ((inputs[i][0])-image_min) / (image_max-image_min)
+        with torch.no_grad():
+            inputs, Hlabel, Clabel, position_label, class_label = data['video'], data['Hlabel'], data['Clabel'], data['position'], data['class_label']
+            inputs = torch.unsqueeze(inputs, 1).float().cuda() # float64 is actually "double"
+            # Vectorized per-sample min-max normalization across the batch
+            img = inputs[:, 0]  # (B, T, H, W)
+            mins = img.reshape(img.shape[0], -1).min(dim=1).values[:, None, None, None]
+            maxs = img.reshape(img.shape[0], -1).max(dim=1).values[:, None, None, None]
+            inputs[:, 0] = (img - mins) / (maxs - mins)
 
-        inputs = Variable(inputs, requires_grad=False)
-        class_out, center_out, H_out, C_out = model(inputs)
-        class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
-        class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
-        v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
-        v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = v_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
+            class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
+            with torch.amp.autocast('cuda'):
+                class_out, center_out, H_out, C_out = model(inputs)
+                class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
+                v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
+            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = v_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
     torch.backends.cudnn.benchmark = True  # use the fastest convolution methods when the inputs size are fixed improves performance
@@ -238,7 +247,8 @@ def main():
     print("Initializing model...")
     model = spt.SPTnet(num_classes=1, num_queries=spt.num_queries, num_frames=spt.number_of_frame, spatial_t=transformer,
                        temporal_t=transformer3d, input_channel=512).to(device)
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)  # Disabled for performance; re-enable only for debugging
+    scaler = torch.amp.GradScaler('cuda')  # AMP gradient scaler for mixed-precision training
 
     if args.gpus > 1:
         device_ids = list(range(args.gpus))
