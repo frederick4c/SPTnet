@@ -1,4 +1,5 @@
 ## STPnet_toolbox
+import os
 import torch
 import torch.optim as optim
 import time
@@ -226,10 +227,11 @@ class SPTnet_toolbox(object):
         # mean_t, std_t = dataserver_train.mean(), dataserver_train.std()
         # dataserver_train = transforms.Normalize(mean_t, std_t)
         self.dataserver_train = dataserver_train
+        _nw = min(os.cpu_count() or 2, 4)  # Adapt to available CPUs (Colab has 2)
         self.train_dataloader = torch.utils.data.DataLoader(dataserver_train,
-                           batch_size= self.batch_size,shuffle=True, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True) #transforms.Normalize
+                           batch_size= self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=True) #transforms.Normalize
         self.val_dataloader = torch.utils.data.DataLoader(val_set,
-                           batch_size=self.batch_size,shuffle=True, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True)
+                           batch_size=self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=True)
 
     def testdata_loader(self, dataserver_test):
         self.test_data = torch.utils.data.DataLoader(dataserver_test,batch_size=1,

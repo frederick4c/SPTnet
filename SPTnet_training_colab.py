@@ -209,9 +209,13 @@ def main():
 
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast('cuda'):
-            class_out, center_out, H_out, C_out = model(inputs)  # class out [batch, frames, queries, 1]  center out [batch, frames,queries, 2]
-            class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
-            t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
+            class_out, center_out, H_out, C_out = model(inputs)
+        # Cast back to float32 for loss computation (BCE is unsafe under autocast)
+        class_out = class_out.float().squeeze()
+        center_out = center_out.float()
+        H_out = H_out.float().squeeze()
+        C_out = C_out.float().squeeze()
+        t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
         scaler.scale(t_loss).backward()
         scaler.step(optimizer)
         scaler.update()
@@ -232,8 +236,12 @@ def main():
             class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
             with torch.amp.autocast('cuda'):
                 class_out, center_out, H_out, C_out = model(inputs)
-                class_out, H_out, C_out = class_out.squeeze(), H_out.squeeze(), C_out.squeeze()
-                v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
+            # Cast back to float32 for loss computation (BCE is unsafe under autocast)
+            class_out = class_out.float().squeeze()
+            center_out = center_out.float()
+            H_out = H_out.float().squeeze()
+            C_out = C_out.float().squeeze()
+            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = v_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
