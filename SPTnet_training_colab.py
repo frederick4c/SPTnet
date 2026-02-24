@@ -203,7 +203,7 @@ def main():
         img = inputs[:, 0]  # (B, T, H, W)
         mins = img.reshape(img.shape[0], -1).min(dim=1).values[:, None, None, None]
         maxs = img.reshape(img.shape[0], -1).max(dim=1).values[:, None, None, None]
-        inputs[:, 0] = (img - mins) / (maxs - mins)
+        inputs[:, 0] = (img - mins) / (maxs - mins + 1e-8)
 
         class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
 
@@ -231,7 +231,7 @@ def main():
             img = inputs[:, 0]  # (B, T, H, W)
             mins = img.reshape(img.shape[0], -1).min(dim=1).values[:, None, None, None]
             maxs = img.reshape(img.shape[0], -1).max(dim=1).values[:, None, None, None]
-            inputs[:, 0] = (img - mins) / (maxs - mins)
+            inputs[:, 0] = (img - mins) / (maxs - mins + 1e-8)
 
             class_label, position_label, Hlabel, Clabel = class_label.float().cuda(), (position_label/(spt.image_size/2)).float().cuda(), Hlabel.float().cuda(), (Clabel/spt.diff_max).float().cuda()
             with torch.amp.autocast('cuda'):

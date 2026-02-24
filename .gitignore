@@ -1,3 +1,7 @@
 Trained_models/trained_model
 __pycache__
 .DS_Store
+
+
+# PDFs
+*.pdf
