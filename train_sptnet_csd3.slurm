@@ -19,9 +19,9 @@
 module purge
 module load rhel8/default-amp
 
-# If you use miniconda or a specific python module, load it and activate your env here:
-module load miniconda/3
-source activate /home/fl482/rds/hpc-work/conda_envs/spt_env
+# Load the standard Python 3 module (adjust if CSD3 uses a specific python/3.x module)
+module load python/3.11.0-icl
+source ~/envs/SPTnet/bin/activate
 
 # ---------------------------------------------------------------------
 # Run the application
