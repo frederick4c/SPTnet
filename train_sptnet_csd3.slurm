@@ -9,6 +9,7 @@
 #SBATCH --time=00:30:00              # Time limit hrs:min:sec
 #SBATCH --output=sptnet_train_%j.out # Standard output log (%j = job ID)
 #SBATCH --error=sptnet_train_%j.err  # Standard error log
+#SBATCH --export=ALL                 # Export all environment variables to the job
 
 # ---------------------------------------------------------------------
 # Module Loading & Environment Setup (Adjust to your actual CSD3 setup)
@@ -33,9 +34,14 @@ cd $SLURM_SUBMIT_DIR
 # Prevent standard python multiprocessing from taking all CPU cores
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
+echo "Diagnostic info for virtual environment:"
+which python
+pip list
+python -c "import sys; print(sys.path)"
+
 echo "Starting SPTnet training on CSD3 Ampere node..."
 
-python SPTnet_training_colab.py \
+~/envs/SPTnet/bin/python SPTnet_training_colab.py \
     --model-dir ./Trained_models/ \
     --data "./TestData/eg_trainingvideos_*.mat" \
     --gpus 1
