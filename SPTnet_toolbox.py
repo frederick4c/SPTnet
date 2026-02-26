@@ -111,9 +111,9 @@ class SPTnet_toolbox(object):
 
             j = 0
             for i in range(len(Hlabel_ref)):
-                if np.array(self.dataset[Hlabel_ref[i]][0]) != 0:
-                    Hlabel[j] = float(np.array(self.dataset[Hlabel_ref[i]][0]))
-                    Clabel[j] = float(np.array(self.dataset[Clabel_ref[i]][0]))
+                if np.array(self.dataset[Hlabel_ref[i]][0, 0]) != 0:
+                    Hlabel[j] = float(np.array(self.dataset[Hlabel_ref[i]][0, 0]))
+                    Clabel[j] = float(np.array(self.dataset[Clabel_ref[i]][0, 0]))
                     pos_arr = np.array(self.dataset[position_ref[i]]).T  # expect (T,2)
                     if pos_arr.size == video.shape[0] * 2:
                         position[:, j, :] = pos_arr

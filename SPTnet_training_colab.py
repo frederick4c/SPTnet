@@ -156,8 +156,8 @@ def main():
                 H_idx = torch.clamp((gt_H_nonzero*100).round()-1,min=0,max=98).cpu().numpy().astype(int)
                 C_idx = torch.clamp((gt_C_nonzero*spt.diff_max*100).round() - 1, min=0, max=spt.diff_max*100-1).cpu().numpy().astype(int)
                 stepidx = duration.cpu().numpy().astype(int)-1
-                CRLBweight_H = CRLB_matrix[0,0,C_idx,H_idx,stepidx] / CRLB_matrix[0, 0, C_idx, H_idx, spt.number_of_frame-1]
-                CRLBweight_C = CRLB_matrix[1, 1, C_idx, H_idx, stepidx] / CRLB_matrix[1, 1, C_idx, H_idx, spt.number_of_frame-1]
+                CRLBweight_H = CRLB_matrix[0, 0, stepidx, H_idx, C_idx] / CRLB_matrix[0, 0, spt.number_of_frame-1, H_idx, C_idx]
+                CRLBweight_C = CRLB_matrix[1, 1, stepidx, H_idx, C_idx] / CRLB_matrix[1, 1, spt.number_of_frame-1, H_idx, C_idx]
                 H_loss_matrix = criterion_mae(pred_H[b].view(-1,1).repeat(1, gt_H_nonzero.shape[-1]),gt_H_nonzero.view(1,-1).repeat(pred_H.shape[-1],1)) / torch.tensor(CRLBweight_H).repeat(pred_H.shape[-1],1).cuda()
                 C_loss_matrix = criterion_mae(pred_C[b].view(-1, 1).repeat(1, gt_C_nonzero.shape[-1]),gt_C_nonzero.view(1, -1).repeat(pred_C.shape[-1], 1)) /torch.tensor(CRLBweight_C).repeat(pred_H.shape[-1],1).cuda()
                 cost_matrix_all_pf = (cost_matrix_class_pf + 2*pos_loss_matrix_allfrm_pf + 0.5*H_loss_matrix + 0.5*C_loss_matrix).t()
