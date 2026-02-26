@@ -161,8 +161,12 @@ def main():
                 H_loss_matrix = criterion_mae(pred_H[b].view(-1,1).repeat(1, gt_H_nonzero.shape[-1]),gt_H_nonzero.view(1,-1).repeat(pred_H.shape[-1],1)) / torch.tensor(CRLBweight_H).repeat(pred_H.shape[-1],1).cuda()
                 C_loss_matrix = criterion_mae(pred_C[b].view(-1, 1).repeat(1, gt_C_nonzero.shape[-1]),gt_C_nonzero.view(1, -1).repeat(pred_C.shape[-1], 1)) /torch.tensor(CRLBweight_C).repeat(pred_H.shape[-1],1).cuda()
                 cost_matrix_all_pf = (cost_matrix_class_pf + 2*pos_loss_matrix_allfrm_pf + 0.5*H_loss_matrix + 0.5*C_loss_matrix).t()
+                
+                # Safety clamp for SciPy linear_sum_assignment: Replace NaN/Inf with safe max values
+                cost_matrix_safe = torch.nan_to_num(cost_matrix_all_pf, nan=1e4, posinf=1e4, neginf=-1e4)
+
                 # Compute the optimal assignment
-                row_indices, col_indices = linear_sum_assignment(cost_matrix_all_pf.cpu().detach().numpy())
+                row_indices, col_indices = linear_sum_assignment(cost_matrix_safe.cpu().detach().numpy())
                 # Calculate the losses for the assigned pairs
                 cost_matrix_all_pf = cost_matrix_all_pf[row_indices, col_indices].sum()
 
