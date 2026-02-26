@@ -223,7 +223,7 @@ def main():
         scaler.scale(t_loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = t_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
+        t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(t_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
         return t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
     def val_step(batch_idx, data):
@@ -246,7 +246,7 @@ def main():
             H_out = H_out.float().squeeze()
             C_out = C_out.float().squeeze()
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
-            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = v_loss.item(), cl_ls.item(), coor_ls.item(), h_ls.item(), diff_ls.item(), bg_ls.item()
+            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(v_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
 
     torch.backends.cudnn.benchmark = True  # use the fastest convolution methods when the inputs size are fixed improves performance
