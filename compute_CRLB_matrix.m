@@ -1,10 +1,11 @@
 %% Compute CRLB matrix for estimating Hurst exponent and diffusion coefficient in fractional Brownian motion used for SPTnet training.
 % Pre-allocate CRLB storage
 frame_number = 10; % maximum frame number in the video 
-D_maximum = 2; %unit: pixel^2/frame^-2H
-D_step = D_maximum/0.01;
-CRLB_matrix_HD_frame = zeros(D_step,99,frame_number,2,2); % (diff,Hurst,frame,CRLB_column1,CRLB_column2)
-warning('off','MATLAB:singularMatrix');
+D_maximum = 2; % unit : pixel ^ 2 / frame ^ -2H
+D_step = D_maximum / 0.01;  
+CRLB_matrix_HD_frame = zeros(frame_number, 99, D_step, 2, 2);
+% (frame, Hurst, diff, CRLB_column1,
+   CRLB_column2)warning('off', 'MATLAB:singularMatrix');
 tic
 for frames = 2:frame_number % from 2 frames to "frame_number"
     % compute Fisher information for this # of steps (frames)
@@ -13,20 +14,17 @@ for frames = 2:frame_number % from 2 frames to "frame_number"
     for jj = 1:D_step %Generalied diffusion coefficient ranging from 0.01 to 2.00 
         for ii = 1:99 % Hurst exponent ranging from 0.01 to 0.99
             CRLB_matrix_HD_frame(frames,ii,jj,:,:) = squeeze(I(ii,jj,:,:)) \ eye(2);
-            % equivalent to inv(squeeze(I(ii,jj,:,:)))
-        end
-    end
-end
-save('CRLB_H_D_frame.mat', 'CRLB_matrix_HD_frame');
-toc
-%% Visualize the matrix
-colors = turbo(60);
-% cbh.TickLabels = num2cell(1:2:30) ; 
-for i = 5:1:60
-[X, Y] = meshgrid(1:D_step, 1:99);
-Z = squeeze(CRLB_matrix_HD_frame(i,:,:,1,1)); 
+    % equivalent to inv(squeeze(I(ii, jj,
+                                  :,
+                                  :))) end end end
+        save('CRLB_H_D_frame.mat', 'CRLB_matrix_HD_frame');
+    toc % % Visualize the matrix colors = turbo(60);
+    % cbh.TickLabels = num2cell(1 : 2 : 30);
+for
+  i = 2 : frame_number[X, Y] = meshgrid(1 : D_step, 1 : 99);
+Z = squeeze(CRLB_matrix_HD_frame(i, :, :, 1, 1));
 % surf(X, Y, Z, 'FaceColor', colors(i, :), 'EdgeColor', 'none');
-surf(X, Y, Z, 'FaceColor', colors(i, :), 'EdgeColor', 'k', 'EdgeAlpha',0.2);
+surf(X, Y, Z', 'FaceColor', colors(i*5, :), 'EdgeColor', 'k', 'EdgeAlpha',0.2);
 hold on
 end
 xlabel('Generalized diffusion coefficient');
@@ -47,11 +45,11 @@ yticklabels({'0','0.1','0.2','0.3','0.4','0.5','0.6','0.7','0.8','0.9','1.0'})
 set(gcf,'Position',[200 200 800 800])
 
 figure
-for i = 5:1:60
+for i = 2:frame_number
 [X, Y] = meshgrid(1:D_step, 1:99);
 Z = squeeze(CRLB_matrix_HD_frame(i,:,:,2,2)); 
 % surf(X, Y, Z, 'FaceColor', colors(i, :), 'EdgeColor', 'none');
-surf(X, Y, Z, 'FaceColor', colors(i, :), 'EdgeColor', 'k', 'EdgeAlpha',0.2);
+surf(X, Y, Z', 'FaceColor', colors(i*5, :), 'EdgeColor', 'k', 'EdgeAlpha',0.2);
 hold on
 end
 xlabel('Generalized diffusion coefficient');
