@@ -31,6 +31,19 @@ class TiffDataset(Dataset):
     def __getitem__(self, idx):
         return {'video': self.video}
 
+def get_num_queries(ckpt_path):
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    if "state_dict" in ckpt:
+        sd = ckpt["state_dict"]
+    else:
+        sd = ckpt
+    # read query_embed size
+    for k in sd:
+        if "query_embed.weight" in k:
+            return sd[k].shape[0]
+    raise ValueError("query_embed.weight not found")
+
+num_q = get_num_queries(selected_directory)
 
 
 spt = SPTnet_toolbox(
@@ -41,7 +54,7 @@ spt = SPTnet_toolbox(
     use_gpu=True,
     image_size=64,
     number_of_frame=30,
-    num_queries= 20
+    num_queries= num_q
 )
 
 filename_test = askopenfilename(multiple=True,initialdir=current_folder, title='#######Please select the Test Data Files########') # show an "Open" dialog box and return the path to the selected file
