@@ -2,8 +2,8 @@
 This repository accompanies the manuscript:
 “SPTnet: a deep learning framework for end-to-end single-particle tracking and motion dynamics analysis”
 by Cheng Bi, Kevin L. Scrudders, Yue Zheng, Maryam Mahmoodi, Chelsea Yang, Hark Kyun Kim, Alejandro Chavez, Legant R. Wesley, Shalini T. Low-Nam, and Fang Huang.
-![M13 Sec61_Large_video_small2](https://github.com/user-attachments/assets/30d68965-24cb-46e7-bb08-da8f0aeb1424)
 
+![M13 Sec61_Large_video_small2](https://github.com/user-attachments/assets/30d68965-24cb-46e7-bb08-da8f0aeb1424)
 ## Repository contents
 ```text
 Python files
