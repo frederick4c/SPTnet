@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH -J SPTnet_train              # Job name
+#SBATCH -J SPTnet_infer_par           # Job name
 #SBATCH -A MPHIL-DIS-SL2-GPU         # Project / Account
 #SBATCH -p ampere                    # Partition (queue) name for Ampere A100 nodes
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of scripts to run
 #SBATCH --cpus-per-task=4            # Number of CPU cores per task
 #SBATCH --gres=gpu:1                 # Number of GPUs per node (A100)
-#SBATCH --time=00:30:00              # Time limit hrs:min:sec
-#SBATCH --output=sptnet_train_%j.out # Standard output log (%j = job ID)
-#SBATCH --error=sptnet_train_%j.err  # Standard error log
+#SBATCH --time=00:10:00              # Time limit hrs:min:sec
+#SBATCH --output=sptnet_infer_par_%j.out # Standard output log (%j = job ID)
+#SBATCH --error=sptnet_infer_par_%j.err  # Standard error log
 #SBATCH --export=ALL                 # Export all environment variables to the job
 
 # ---------------------------------------------------------------------
@@ -39,11 +39,11 @@ which python
 pip list
 python -c "import sys; print(sys.path)"
 
-echo "Starting SPTnet training on CSD3 Ampere node..."
+echo "Starting Parallel SPTnet inference on CSD3 Ampere node..."
 
-~/envs/SPTnet/bin/python SPTnet_training_cli.py \
-    --model-dir ./Trained_models/ \
-    --data "./TestData/eg_trainingvideos_*.mat" \
-    --gpus 1
+~/envs/SPTnet/bin/python SPTnet_inference_parallel_cli.py \
+    -m ./Trained_models/Pretrained_model_for_Ti2microscope \
+    -d "./TestData/tiff_output/*.tif" \
+    -b 8
 
-echo "Training job completed."
+echo "Inference job completed."
