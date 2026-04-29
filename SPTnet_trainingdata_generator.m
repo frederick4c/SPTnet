@@ -1,5 +1,5 @@
 % Main script for generating simulation videos for SPTnet training
-%
+% Version 2.0
 % (C) Copyright 2025                The Huang Lab
 %
 %     All rights reserved           Weldon School of Biomedical Engineering
@@ -7,7 +7,7 @@
 %                                   West Lafayette, Indiana
 %                                   USA
 %
-%     Author: Cheng Bi, July 2025
+%     Author: Cheng Bi, Jan 2026
 %%
 SPTnet_trainingdata_generator_GUI
 
@@ -17,19 +17,81 @@ function SPTnet_trainingdata_generator_GUI
     fig = uifigure('Name','SPTnet Training Video Generator','Position',[400 100 700 900]);  
     % panel 1
     psfNames = {'NA','Lambda','RefractiveIndex','OTFscale_SigmaX','OTFscale_SigmaY', ...
-                'Pixelsize','PSFsize','nMed','Photon','Bg','Perlin_Bg'};
-    psfDefaults = [1.49, 0.69, 1.518, 0.95, 0.95, 0.157, 128, 1.33, 1000, 25, 0];
-    handles.psf = createPanel(fig, 'PSF & Imaging setup', [10 470 280 420], psfNames, psfDefaults);%+r-l,+u-d, width, height
+                'Pixelsize','PSFsize','nMed'};
+    psfDefaults = [1.49, 0.69, 1.518, 0.95, 0.95, 0.157, 128, 1.33];
+    [handles.psf, psfPanel] = createPanel(fig, 'PSF & Imaging setup', [10 470 280 420], psfNames, psfDefaults);
     
+    % Panel is 280x420;
+    % horizontal geometry
+    xLabel = 10;      wLabel = 110;
+    xMin   = 140;     wMin   = 50;
+    xDash  =+ xMin + wMin + 5;
+    xMax   = xDash + 10 + 5;
+    wMax   = 50;
+
+    % Vertical positions
+    yPhoton = 90;
+    yBg     = 60;
+    yPerlin = 30;
+
+    % Photon range: Photon [min] – [max]
+    uilabel(psfPanel, ...
+        'Position',[xLabel yPhoton wLabel 22], ...
+        'Text','Photon', ...
+        'Interpreter','none');
+    handles.psf.Photon_min = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMin yPhoton wMin 22], ...
+        'Value',300);           % default min photon
+    uilabel(psfPanel, ...
+        'Position',[xDash yPhoton 10 22], ...
+        'Text','–', ...
+        'HorizontalAlignment','center');
+    handles.psf.Photon_max = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMax yPhoton wMax 22], ...
+        'Value',5000);          % default max photon
+
+    % Background range: Bg [min] – [max]
+    uilabel(psfPanel, ...
+        'Position',[xLabel yBg wLabel 22], ...
+        'Text','Background (Bg)', ...
+        'Interpreter','none');
+    handles.psf.Bg_min = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMin yBg wMin 22], ...
+        'Value',1);             % default min bg
+    uilabel(psfPanel, ...
+        'Position',[xDash yBg 10 22], ...
+        'Text','–', ...
+        'HorizontalAlignment','center');
+    handles.psf.Bg_max = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMax yBg wMax 22], ...
+        'Value',25);            % default max bg
+
+    % Perlin background range: Perlin_Bg [min] – [max]
+    uilabel(psfPanel, ...
+        'Position',[xLabel yPerlin wLabel 22], ...
+        'Text','Perlin Bg', ...
+        'Interpreter','none');
+    handles.psf.Perlin_Bg_min = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMin yPerlin wMin 22], ...
+        'Value',0);             % default min perlin
+    uilabel(psfPanel, ...
+        'Position',[xDash yPerlin 10 22], ...
+        'Text','–', ...
+        'HorizontalAlignment','center');
+    handles.psf.Perlin_Bg_max = uieditfield(psfPanel,'numeric', ...
+        'Position',[xMax yPerlin wMax 22], ...
+        'Value',10);            % default max perlin
+
     % panel 2
-    simNames = {'Num_file', 'Videos_per_file', 'Frames', 'Image_dims', 'Max_particles'};
+    simNames = {'Num_file', 'Videos_per_file', 'Frames', 'Image_dims'};
     simDefaults = [5, 100, 30, 64, 10];
-    handles.sim = createPanel(fig, 'Video & Simulation Params', [10 50 280 250], simNames, simDefaults);
+
+    handles.sim = createPanel2col(fig, 'Video & Simulation Params', [10 50 280 250], simNames, simDefaults);
     handles.sim.MotionBlur = uicheckbox(fig, ...
-        'Text', 'Add Motion Blur Effect', ...
-        'Position', [20 80 150 20], ...
-        'Value', false);    
-    
+    'Text', 'Add Motion Blur Effect', ...
+    'Position', [20 80 150 20], ...
+    'Value', false);    
+
     % panel for PSF preview
     handles.axPSF      = uiaxes(fig, 'Position',[290 660 200 200]);
     handles.axPSF.Title.String      = 'PSF (no noise)';
@@ -87,7 +149,7 @@ function SPTnet_trainingdata_generator_GUI
             'ButtonPushedFcn',@(btn,event)resetZernike(handles));
 end
 
-function h = createPanel(parent,title,pos,names,defaults)
+function [h,p] = createPanel(parent,title,pos,names,defaults)
     p = uipanel(parent,'Title',title,'Position',pos);
     % leave ~50px for the title bar + top padding
     topMargin = 50;  
@@ -107,6 +169,66 @@ function h = createPanel(parent,title,pos,names,defaults)
         y = y - 35;
     end
 end
+
+function h = createPanel2col(parent,title,pos,names,defaults)
+    p = uipanel(parent,'Title',title,'Position',pos);
+
+    topMargin = 45;
+    rowStep   = 28;
+    y0 = pos(4) - topMargin;
+
+    % 2-column geometry
+    xL_label = 5;   wLabel = 80;
+    xL_fld   = 100;   wFld   = 40;
+    xR_label = 145;
+    xR_fld   = 235;
+
+    n = numel(names);
+    i = 1; row = 0;
+
+    while i <= n
+        y = y0 - row*rowStep;
+
+        % left
+        nameL = names{i};
+        uilabel(p,'Position',[xL_label y wLabel 22],'Text',nameL,'Interpreter','none');
+        h.(nameL) = uieditfield(p,'numeric','Position',[xL_fld y wFld 22],'Value',defaults(i));
+        i = i + 1;
+
+        % right
+        if i <= n
+            nameR = names{i};
+            uilabel(p,'Position',[xR_label y wLabel+20 22],'Text',nameR,'Interpreter','none');
+            h.(nameR) = uieditfield(p,'numeric','Position',[xR_fld y wFld 22],'Value',defaults(i));
+            i = i + 1;
+        end
+
+        row = row + 1;
+    end
+
+    y_1 = y0 - row*rowStep;
+    y_2 = y0 - (row+1)*rowStep;
+    y_3 = y0 - (row+2)*rowStep;
+
+    % Particle number range label + [min] - [max]
+    uilabel(p,'Position',[xL_label y_1 90 22],'Text','Particle Number','Interpreter','none');
+    h.p_num_min = uieditfield(p,'numeric','Position',[xL_fld y_1 40 22],'Value',1);
+    uilabel(p,'Position',[xL_fld+42 y_1 10 22],'Text','–','HorizontalAlignment','center');
+    h.p_num_max = uieditfield(p,'numeric','Position',[xL_fld+55 y_1 40 22],'Value',10);
+
+    % Hurst range row: label + [min] - [max]
+    uilabel(p,'Position',[xL_label y_2 90 22],'Text','Hurst Exponent','Interpreter','none');
+    h.Hurst_min = uieditfield(p,'numeric','Position',[xL_fld y_2 40 22],'Value',0.0001);
+    uilabel(p,'Position',[xL_fld+42 y_2 10 22],'Text','–','HorizontalAlignment','center');
+    h.Hurst_max = uieditfield(p,'numeric','Position',[xL_fld+55 y_2 40 22],'Value',0.9999);
+
+    % D range row on the right: label + [min] - [max]
+    uilabel(p,'Position',[xL_label y_3 90 22],'Text','Diff. Coeff.','Interpreter','none');
+    h.D_min = uieditfield(p,'numeric','Position',[xL_fld y_3 40 22],'Value',0.001);
+    uilabel(p,'Position',[xL_fld+42 y_3 10 22],'Text','–','HorizontalAlignment','center');
+    h.D_max = uieditfield(p,'numeric','Position',[xL_fld+55 y_3 40 22],'Value',0.5);
+end
+
 
 function onpreview(handles, action)
     % pull numeric values out into plain structs
@@ -152,10 +274,10 @@ function onpreview(handles, action)
     psfobj.scalePSF('normal');  % generate OTF scaled PSFs, 'IMM': PSFs with index mismatch aberration, 'normal': PSFs without index mismatch aberration 
     norm_parameter = sum(sum(psfobj.Pupil.mag));
     psf = psfobj.ScaledPSFs;    
-    psf = psf./norm_parameter.*psfParams.Photon;
+    psf = psf./norm_parameter.*unifrnd(psfParams.Photon_min,psfParams.Photon_max);
     psf(isnan(psf)) = 0;
     % "noise" is a function in the DIPimage2.9 package
-    noise_psf = single(noise(psf + psfParams.Bg + psfParams.Perlin_Bg * perlin_noise(simParams.Image_dims), 'poisson'));
+    noise_psf = single(noise(psf + unifrnd(psfParams.Bg_min,psfParams.Bg_max) + unifrnd(psfParams.Perlin_Bg_min,psfParams.Perlin_Bg_max) * perlin_noise(simParams.Image_dims), 'poisson'));
     M = size(psfobj.Pupil.mag,1);
     RC   = ceil(M/2);
     Rsub = floor(127/2);
@@ -230,9 +352,9 @@ function onpreviewvideo(handles, action)
     % ---- Dataset Generation ----
     for datasetIndex = 1:1
         % Background generation
-        bgLevel = psfParams.Bg;
-        Perlin_bg = psfParams.Perlin_Bg;
-        oversampling = 10; % parameter for motion blur
+        bgLevel = unifrnd(psfParams.Bg_min,psfParams.Bg_max);
+        Perlin_bg = unifrnd(psfParams.Perlin_Bg_min,psfParams.Perlin_Bg_max);
+        oversampling = 10; % parameter for motion blur, upsampling multiplier
         % Initialize PSF accumulation
         if enableMotionBlur
             psf_all = single(zeros(simParams.Image_dims, simParams.Image_dims, simParams.Frames*oversampling));
@@ -240,21 +362,29 @@ function onpreviewvideo(handles, action)
             psf_all = single(zeros(simParams.Image_dims, simParams.Image_dims, simParams.Frames));
         end
         % Generate multiple trajectories per dataset
-        numParticles = randi([1, simParams.Max_particles]); % Random number of particles per videos
+        numParticles = randi([simParams.p_num_min, simParams.p_num_max]); % Random number of particles per videos
         moleculeCounter = 0;
+
+        T = simParams.Frames;
+        Nmin = simParams.p_num_min;  
+        Nmax = simParams.p_num_max;
+        Lmin = 2;        
+        Lmax = T;   
+        tracks = uniform_duration_and_present(T, numParticles, Lmin, Lmax);
+        
         for particleIndex = 1:numParticles
+            start_t = tracks(particleIndex).t0;
+            duration{datasetIndex,particleIndex} = tracks(particleIndex).t1 - tracks(particleIndex).t0 + 1;
             % Generate fBM trajectory
-            hurstExponent = unifrnd(0.0001, 0.9999);
-            diffusionCoefficient = unifrnd(0.001, 0.5);
-            duration{datasetIndex,particleIndex} = randi(simParams.Frames-1)+1; %range(2-30)
-            start_t = randi(simParams.Frames+1-duration{datasetIndex,particleIndex});
+            hurstExponent = unifrnd(simParams.Hurst_min, simParams.Hurst_max);
+            diffusionCoefficient = unifrnd(simParams.D_min, simParams.D_max);                       
             if enableMotionBlur
                 osduration{datasetIndex,particleIndex} = duration{datasetIndex,particleIndex}*oversampling;
                 osstart_t = 1+(start_t-1)*oversampling;
                 [trajectoryX, trajectoryY] = fractional_brownian_motion_generator_2D(hurstExponent, osduration{datasetIndex,particleIndex}, diffusionCoefficient);
                 FBMx = (1/oversampling)^(hurstExponent)*trajectoryX;
                 FBMy = (1/oversampling)^(hurstExponent)*trajectoryY;
-                photons = unifrnd(300,2000); 
+                photons = unifrnd(psfParams.Photon_min,psfParams.Photon_max); 
                 xOffset = unifrnd(-(simParams.Image_dims/2)+4, (simParams.Image_dims/2)-4); % make inital position not too close to the edge
                 yOffset = unifrnd(-(simParams.Image_dims/2)+4, (simParams.Image_dims/2)-4); % 4 pixels away from the edge
                 overstep = simParams.Frames*oversampling;
@@ -270,10 +400,9 @@ function onpreviewvideo(handles, action)
                 norm_parameter = sum(sum(psfobj.Pupil.mag));
                 psfobj.scalePSF('normal');              % generate OTF scaled PSFs, 'IMM': PSFs with index mismatch aberration, 'normal': PSFs without index mismatch aberration 
                 psf = psfobj.ScaledPSFs;    
-                psf_blur = psf./norm_parameter.*(psfParams.Photon/oversampling);
+                psf_blur = psf./norm_parameter.*(photons/oversampling);
                 psf_blur(isnan(psf_blur)) = 0;
                 psf_all(:,:,:) = psf_all(:,:,:) + psf_blur(:,:,:);
-                      
                 temp = reshape(psf_all, simParams.Image_dims, simParams.Image_dims, oversampling, simParams.Frames);
                 blurpsf = squeeze(sum(temp, 3));
             else
@@ -288,7 +417,7 @@ function onpreviewvideo(handles, action)
                 psfobj.Xpos(start_t:(start_t+duration{datasetIndex,particleIndex} -1)) = trajectoryX + xOffset; % x positions of the PSFs, unit is pixel
                 psfobj.Ypos(start_t:(start_t+duration{datasetIndex,particleIndex} -1)) = trajectoryY + yOffset; % y positions of the PSFs, unit is pixel
                 % Assign photons to PSF
-                photons = unifrnd(300,2000); 
+                photons = unifrnd(psfParams.Photon_min,psfParams.Photon_max); 
                 % Store particle trace positions
                 traceposition{datasetIndex, particleIndex} = single([psfobj.Xpos, psfobj.Ypos]);
                 % PSF computation
@@ -298,7 +427,7 @@ function onpreviewvideo(handles, action)
                 psfobj.scalePSF('normal');           % generate OTF scaled PSFs, 'IMM': PSFs with index mismatch aberration, 'normal': PSFs without index mismatch aberration 
                 norm_parameter = sum(sum(psfobj.Pupil.mag));
                 psf = psfobj.ScaledPSFs;    
-                psf = psf./norm_parameter.*psfParams.Photon;
+                psf = psf./norm_parameter.*photons;
                 psf(isnan(psf)) = 0;
                 psf_all(:,:,:) = psf_all(:,:,:) + psf(:,:,:);
                 % Accumulate PSF for the entire video
@@ -318,7 +447,7 @@ function onpreviewvideo(handles, action)
         imagesc(handles.axVideo, timelapsedata(:,:,t));
         axis(handles.axVideo,'image','off')
         drawnow
-        pause(0.05)          % adjust to taste
+        pause(0.05)
     end
 end
 
@@ -369,21 +498,21 @@ function onGenerate(handles, action)
         timelapsedata = single(zeros(simParams.Image_dims, simParams.Image_dims, simParams.Frames, numvideos));
         bglabel = zeros(1, numvideos, 'single');
         Perlinbglabel = zeros(1, numvideos, 'single');
-        traceposition = cell(numvideos, simParams.Max_particles); 
-        Hlabel = cell(numvideos, simParams.Max_particles);
-        Clabel = cell(numvideos, simParams.Max_particles);
-        photonlabel = cell(numvideos, simParams.Max_particles);
-        moleculeid = cell(numvideos, simParams.Max_particles);
-        duration = cell(numvideos,simParams.Max_particles);
+        traceposition = cell(numvideos, simParams.p_num_max); 
+        Hlabel = cell(numvideos, simParams.p_num_max);
+        Clabel = cell(numvideos, simParams.p_num_max);
+        photonlabel = cell(numvideos, simParams.p_num_max);
+        moleculeid = cell(numvideos, simParams.p_num_max);
+        duration = cell(numvideos,simParams.p_num_max);
         oversampling = 10;
         % ---- Dataset Generation ----
         for datasetIndex = 1:numvideos
             % Background generation
-            bgLevel = unifrnd(1, psfParams.Bg);
-            if psfParams.Perlin_Bg<1
+            bgLevel = unifrnd(psfParams.Bg_min, psfParams.Bg_max);
+            if psfParams.Perlin_Bg_min<1
                 Perlin_bg = 0;
             else
-                Perlin_bg = unifrnd(1, psfParams.Perlin_Bg);
+                Perlin_bg = unifrnd(psfParams.Perlin_Bg_min, psfParams.Perlin_Bg_max);
             end
                 % Initialize PSF accumulation
             if enableMotionBlur
@@ -392,21 +521,30 @@ function onGenerate(handles, action)
                 psf_all = single(zeros(simParams.Image_dims, simParams.Image_dims, simParams.Frames));
             end
             % Generate multiple trajectories per dataset
-            numParticles = randi([1, simParams.Max_particles]); % Random number of particles per videos
+            numParticles = randi([simParams.p_num_min, simParams.p_num_max]); % Random number of particles per videos
             moleculeCounter = 0;
+            
+            T = simParams.Frames;
+            Nmin = simParams.p_num_min;  
+            Nmax = simParams.p_num_max;
+            Lmin = 2;        
+            Lmax = T;   
+            tracks = uniform_duration_and_present(T, numParticles, Lmin, Lmax);
+            
             for particleIndex = 1:numParticles
+                start_t = tracks(particleIndex).t0;
+                duration{datasetIndex,particleIndex} = tracks(particleIndex).t1 - tracks(particleIndex).t0 + 1;
+                
                 % Generate fBM trajectory
-                hurstExponent = unifrnd(0.0001, 0.9999);
-                diffusionCoefficient = unifrnd(0.001, 0.5);
-                duration{datasetIndex,particleIndex} = randi(simParams.Frames-1)+1; %range(2-30)
-                start_t = randi(simParams.Frames+1-duration{datasetIndex,particleIndex});
+                hurstExponent = unifrnd(simParams.Hurst_min, simParams.Hurst_max);
+                diffusionCoefficient = unifrnd(simParams.D_min, simParams.D_max);
                 if enableMotionBlur
                     osduration{datasetIndex,particleIndex} = duration{datasetIndex,particleIndex}*oversampling;
                     osstart_t = 1+(start_t-1)*oversampling;
                     [trajectoryX, trajectoryY] = fractional_brownian_motion_generator_2D(hurstExponent, osduration{datasetIndex,particleIndex}, diffusionCoefficient);
                     FBMx = (1/oversampling)^(hurstExponent)*trajectoryX;
                     FBMy = (1/oversampling)^(hurstExponent)*trajectoryY;
-                    photons = unifrnd(300,psfParams.Photon);
+                    photons = unifrnd(psfParams.Photon_min,psfParams.Photon_max);
                     xOffset = unifrnd(-(simParams.Image_dims/2)+4, (simParams.Image_dims/2)-4); % make inital position not too close to the edge
                     yOffset = unifrnd(-(simParams.Image_dims/2)+4, (simParams.Image_dims/2)-4); % 4 pixels away from the edge
                     overstep = simParams.Frames*oversampling;
@@ -447,7 +585,7 @@ function onGenerate(handles, action)
                     psfobj.Xpos(start_t:(start_t+duration{datasetIndex,particleIndex} -1)) = trajectoryX + xOffset; % x positions of the PSFs, unit is pixel
                     psfobj.Ypos(start_t:(start_t+duration{datasetIndex,particleIndex} -1)) = trajectoryY + yOffset; % y positions of the PSFs, unit is pixel
                     % Assign photons to PSF
-                    photons = unifrnd(1,psfParams.Photon); 
+                    photons = unifrnd(psfParams.Photon_min,psfParams.Photon_max); 
 
                     % Store particle trace positions
                     traceposition{datasetIndex, particleIndex} = single([psfobj.Xpos, psfobj.Ypos]);
@@ -481,7 +619,7 @@ function onGenerate(handles, action)
                 timelapsedata(:,:,:,datasetIndex) = single(noise(psf_all + bgLevel + Perlin_bg * perlin_noise(simParams.Image_dims), 'poisson'));
             end
         end
-          % ---- Save Data ----
+        % ---- Save Data ----
         saveFileName = [folder,'\trainingvideos_', num2str(fileindex)];
         save(saveFileName, 'timelapsedata', 'Hlabel', 'Clabel', 'photonlabel', 'bglabel', 'traceposition', 'moleculeid', 'Perlinbglabel','duration', '-v7.3');
         % Update progress bar
@@ -532,5 +670,60 @@ function [x,y] = fractional_brownian_motion_generator_2D(H,steps,C)
     Y = sqrt(2*C)*randn(steps,1);
     x = L*X;
     y = L*Y;
+end
+
+%% Function to generate uniform distributed duration time and presented molecule per frame
+function tracks = uniform_duration_and_present(T, numParticles, Lmin, Lmax)
+    assert(T >= 1);
+    assert(numParticles >= 0);
+    assert(Lmin >= 1 && Lmin <= Lmax);
+    occ = zeros(1, T);
+    tracks = struct('t0', cell(1,numParticles), 't1', cell(1,numParticles), 'L', cell(1,numParticles));
+
+    % duration distribution uniform
+    Ls = randi([Lmin Lmax], 1, numParticles);
+    Ls(Ls > T) = T;
+
+    % focusing on longer track first
+    [Ls, order] = sort(Ls, 'descend');
+
+    for k = 1:numParticles
+        L = Ls(k);
+        bestStarts = [];
+        bestScore = inf;
+        
+        % valid tracks
+        for t0 = 1:(T - L + 1)
+            t1 = t0 + L - 1;
+            occ2 = occ;
+            occ2(t0:t1) = occ2(t0:t1) + 1;
+
+            % score function  
+            % score = max(occ2) - min(occ2);  
+            score = sum((occ2 - mean(occ2)).^2);     %variance like   
+
+            if score < bestScore - 1e-12
+                bestScore = score;
+                bestStarts = t0;
+            elseif abs(score - bestScore) < 1e-12
+                bestStarts(end+1) = t0;
+            end
+        end
+
+        % introduce some randomness
+        t0 = bestStarts(randi(numel(bestStarts)));
+        t1 = t0 + L - 1;
+
+        occ(t0:t1) = occ(t0:t1) + 1;
+
+        tracks(k).t0 = t0;
+        tracks(k).t1 = t1;
+        tracks(k).L  = L;
+    end
+
+    % back to the original order
+    tmp = tracks;
+    tracks = struct('t0',{},'t1',{},'L',{});
+    tracks(order) = tmp; 
 end
 
