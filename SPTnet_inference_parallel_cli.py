@@ -292,6 +292,7 @@ def main():
     for file_path, rec in results_by_file.items():
         base = os.path.splitext(basename(file_path))[0] + '.mat'
         estimation_obj = np.vstack(rec['obj_estimation'])
+        estimation_obj = np.expand_dims(estimation_obj, axis=1) # Shape: [N, 1, Q, T] to match MATLAB GUI expectation
         estimation_xy = np.vstack(rec['estimation_xy'])
         estimation_H = np.vstack(rec['estimation_H'])
         estimation_C = np.vstack(rec['estimation_C'])

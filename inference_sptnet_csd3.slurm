@@ -42,7 +42,7 @@ python -c "import sys; print(sys.path)"
 echo "Starting Parallel SPTnet inference on CSD3 Ampere node..."
 
 ~/envs/SPTnet/bin/python SPTnet_inference_parallel_cli.py \
-    -m ./Trained_models/Pretrained_model_for_Ti2microscope \
+    -m ./Trained_models/trained_model \
     -d "./TestData/tiff_output/*.tif" \
     -b 8
 
