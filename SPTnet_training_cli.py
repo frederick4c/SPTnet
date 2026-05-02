@@ -215,10 +215,11 @@ def main():
         with torch.amp.autocast('cuda'):
             class_out, center_out, H_out, C_out = model(inputs)
         # Cast back to float32 for loss computation (BCE is unsafe under autocast)
-        class_out = class_out.float().squeeze()
+        class_out = class_out.float().squeeze(-1) if class_out.shape[-1] == 1 else class_out.float()
         center_out = center_out.float()
-        H_out = H_out.float().squeeze()
-        C_out = C_out.float().squeeze()
+        class_out = class_out.squeeze(-1) if class_out.shape[-1] == 1 else class_out
+        H_out = H_out.float().squeeze(-1)
+        C_out = C_out.float().squeeze(-1)
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
         scaler.scale(t_loss).backward()
         scaler.step(optimizer)
@@ -241,10 +242,11 @@ def main():
             with torch.amp.autocast('cuda'):
                 class_out, center_out, H_out, C_out = model(inputs)
             # Cast back to float32 for loss computation (BCE is unsafe under autocast)
-            class_out = class_out.float().squeeze()
+            class_out = class_out.float().squeeze(-1) if class_out.shape[-1] == 1 else class_out.float()
             center_out = center_out.float()
-            H_out = H_out.float().squeeze()
-            C_out = C_out.float().squeeze()
+            class_out = class_out.squeeze(-1) if class_out.shape[-1] == 1 else class_out
+            H_out = H_out.float().squeeze(-1)
+            C_out = C_out.float().squeeze(-1)
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(v_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls

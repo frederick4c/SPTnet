@@ -620,7 +620,7 @@ function onGenerate(handles, action)
             end
         end
         % ---- Save Data ----
-        saveFileName = [folder,'\trainingvideos_', num2str(fileindex)];
+        saveFileName = fullfile(folder, ['trainingvideos_', num2str(fileindex)]);
         save(saveFileName, 'timelapsedata', 'Hlabel', 'Clabel', 'photonlabel', 'bglabel', 'traceposition', 'moleculeid', 'Perlinbglabel','duration', '-v7.3');
         % Update progress bar
         waitbar(fileindex / total_files, waitbarHandle, sprintf('Generating file %d of %d...', fileindex, total_files));

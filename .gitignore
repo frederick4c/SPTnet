@@ -11,3 +11,6 @@ __pycache__
 
 # env
 .env
+
+# results
+/Trained_models/inference_results/
