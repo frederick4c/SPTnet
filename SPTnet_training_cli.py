@@ -128,6 +128,8 @@ def main():
 
     def hungarian_matched_loss(pred_classes, pred_positions, pred_H, pred_C, gt_classes, gt_positions, gt_H, gt_C):
         num_batches, num_queries, num_frames = pred_classes.shape
+        # Clamp sigmoid outputs to valid BCE range — can be outside range due to floating point errors
+        pred_classes = pred_classes.clamp(1e-6, 1 - 1e-6)
         loss_pb = 0
         total_class_pb = 0
         total_coordi_pb = 0
