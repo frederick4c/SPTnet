@@ -83,11 +83,16 @@ def main():
     else:
         # In this specific case, filename_train is already a list of strings
         training_files = filename_train
-    max_dim = 0
-    for fp in training_files:
-        with h5py.File(fp, 'r') as f:
-            data = f['timelapsedata'][()]  # adjust the key if needed
+    # Only read the FIRST file to get image dimensions — reading all 1000 files just for H/W
+    # is a huge bottleneck (~minutes) and completely unnecessary.
+    with h5py.File(training_files[0], 'r') as f:
+        data = f['timelapsedata']
+        if data.ndim == 4:
             (n_videos, n_frames, H, W) = data.shape
+        elif data.ndim == 3:
+            (n_frames, H, W) = data.shape
+        else:
+            raise ValueError(f"Unexpected timelapsedata shape: {data.shape}")
 
     spt = SPTnet_toolbox(
         path_saved_model=full_path,
@@ -102,12 +107,18 @@ def main():
     )
 
     print(f"Loading training data from {len(training_files)} files...")
+    all_datasets = []
     for i, file in enumerate(training_files):
         print(f"Processing file {i+1}/{len(training_files)}: {file}")
         datafile = spt.Transformer_mat2python(SPTnet_toolbox=spt, dataset_path=file)
-        data_train = torch.utils.data.ConcatDataset([data_train,datafile])
+        all_datasets.append(datafile)
+    # Build a FLAT ConcatDataset in one call. Nesting ConcatDataset inside ConcatDataset
+    # on every iteration creates O(N) recursion depth, which overflows Python's limit at ~1000 files.
+    data_train = torch.utils.data.ConcatDataset(all_datasets)
     print(f"Data loading complete. Total samples: {len(data_train)}")
-    spt.data_loader(data_train, [int(len(data_train)*0.8), int(len(data_train)*0.2)])  # train_set, data_test, split training data for validation [train, val].
+    train_size = int(len(data_train) * 0.8)
+    val_size = len(data_train) - train_size  # remainder goes to val, guarantees they sum correctly
+    spt.data_loader(data_train, [train_size, val_size])
     file_path = os.path.join(os.path.dirname(__file__), 'CRLB_H_D_frame.mat')
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"Calcualted CRLB matrix file is not found: {file_path}")
@@ -215,11 +226,10 @@ def main():
         with torch.amp.autocast('cuda'):
             class_out, center_out, H_out, C_out = model(inputs)
         # Cast back to float32 for loss computation (BCE is unsafe under autocast)
-        class_out = class_out.float().squeeze(-1) if class_out.shape[-1] == 1 else class_out.float()
+        class_out = class_out.float()
         center_out = center_out.float()
-        class_out = class_out.squeeze(-1) if class_out.shape[-1] == 1 else class_out
-        H_out = H_out.float().squeeze(-1)
-        C_out = C_out.float().squeeze(-1)
+        H_out = H_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
+        C_out = C_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
         scaler.scale(t_loss).backward()
         scaler.step(optimizer)
@@ -242,11 +252,10 @@ def main():
             with torch.amp.autocast('cuda'):
                 class_out, center_out, H_out, C_out = model(inputs)
             # Cast back to float32 for loss computation (BCE is unsafe under autocast)
-            class_out = class_out.float().squeeze(-1) if class_out.shape[-1] == 1 else class_out.float()
+            class_out = class_out.float()
             center_out = center_out.float()
-            class_out = class_out.squeeze(-1) if class_out.shape[-1] == 1 else class_out
-            H_out = H_out.float().squeeze(-1)
-            C_out = C_out.float().squeeze(-1)
+            H_out = H_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
+            C_out = C_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
             v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(v_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
         return v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls
@@ -270,10 +279,7 @@ def main():
     else:
         model = model.to(device)
 
-    optimizer_SGD = optim.SGD(model.parameters(), lr=spt.learning_rate, momentum=spt.momentum)
-    optimizer_Adam = optim.Adam(model.parameters(), lr=spt.learning_rate, weight_decay=1e-5)
-    optimizer_AdamW = optim.AdamW(model.parameters(), lr=spt.learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=False)
-    optimizer = optimizer_AdamW
+    optimizer = optim.AdamW(model.parameters(), lr=spt.learning_rate, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01, amsgrad=False)
     # scheduler_rdpl = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.4, patience=5, verbose=True,
     #                                                  threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0,
     #                                                  eps=1e-08)
@@ -304,7 +310,11 @@ def main():
     lr = []
 
     modelrecord = open(spt.path_saved_model + 'training_log.txt', 'a')
-    fig, ax = plt.subplots(nrows=2,ncols=3)
+    # Lightweight CSV log — writing a matplotlib figure on every epoch is slow on a headless node.
+    csv_log_path = spt.path_saved_model + 'loss_history.csv'
+    if not os.path.exists(csv_log_path):
+        with open(csv_log_path, 'w') as csv_f:
+            csv_f.write('epoch,t_loss,v_loss,t_cls,v_cls,t_coor,v_coor,t_hurst,v_hurst,t_diff,v_diff,t_bg,v_bg\n')
     while no_improvement < max_num_of_epoch_without_improving:
     # for epoch in range(n_epochs):
         print(f"Starting Epoch {epoch}...")
@@ -321,19 +331,16 @@ def main():
         v_loss_total_hurst = 0
         v_loss_total_diff = 0
         v_loss_total_bg = 0
-        pbar = tqdm(spt.train_dataloader)
-        for batch_idx, data in enumerate(spt.train_dataloader):
+        pbar = tqdm(spt.train_dataloader, desc=f"Epoch {epoch} [train]")
+        for batch_idx, data in enumerate(pbar):
             t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = train_step(batch_idx, data)
-            t_loss_total+= t_loss
+            t_loss_total += t_loss
             t_loss_total_cls += cl_ls
             t_loss_total_coor += coor_ls
             t_loss_total_hurst += h_ls
             t_loss_total_diff += diff_ls
             t_loss_total_bg += bg_ls
-            pbar.set_description(f"Epoch {epoch}")
-            pbar.update(1)
-        pbar.close()
-                # pbar.set_postfix(str(vallossepo))
+            pbar.set_postfix({'loss': f'{t_loss:.4f}'})
         t_loss_epoch = t_loss_total/(batch_idx+1)
         t_loss_epoch_cls  = t_loss_total_cls/(batch_idx+1)
         t_loss_epoch_coor = t_loss_total_coor/(batch_idx+1)
@@ -373,86 +380,59 @@ def main():
         # scheduler_rdpl.step(v_loss_epoch)
         print('learning rate is: %f' %lr[-1])
 
-        # total loss
+        # ---- Collect per-epoch metrics into lists ----
         t_loss_append.append(t_loss_epoch)
         v_loss_append.append(v_loss_epoch)
-        try:
-            t_loss_line.remove(t_loss_line[0])
-            v_loss_line.remove(v_loss_line[0])
-        except Exception:
-            pass
-        t_loss_line = ax[0,0].plot(epoch_list, t_loss_append, 'r', lw=2)
-        v_loss_line = ax[0,0].plot(epoch_list, v_loss_append, 'b', lw=2)
-        ax[0,0].set_title('Total loss')
-        modelrecord.write('\nepoch %d, t_loss: %s, v_loss: %s' % (epoch, t_loss_epoch,v_loss_epoch))
-
-        # cls_loss
         t_loss_epoch_cls_append.append(t_loss_epoch_cls)
         v_loss_epoch_cls_append.append(v_loss_epoch_cls)
-        try:
-            t_cls_loss_line.remove(t_cls_loss_line[0])
-            v_cls_loss_line.remove(v_cls_loss_line[0])
-        except Exception:
-            pass
-        t_cls_loss_line = ax[0,1].plot(epoch_list, t_loss_epoch_cls_append, 'r', lw=2)
-        v_cls_loss_line = ax[0,1].plot(epoch_list, v_loss_epoch_cls_append, 'b', lw=2)
-        ax[0,1].set_title('cls loss')
-        modelrecord.write(', t_cls_loss: %s, v_cls_loss: %s' % (t_loss_epoch_cls,v_loss_epoch_cls))
-
-        # coor_loss
         t_loss_epoch_coor_append.append(t_loss_epoch_coor)
         v_loss_epoch_coor_append.append(v_loss_epoch_coor)
-        try:
-            t_coor_loss_line.remove(t_coor_loss_line[0])
-            v_coor_loss_line.remove(v_coor_loss_line[0])
-        except Exception:
-            pass
-        t_coor_loss_line = ax[0,2].plot(epoch_list, t_loss_epoch_coor_append, 'r', lw=2)
-        v_coor_loss_line = ax[0,2].plot(epoch_list, v_loss_epoch_coor_append, 'b', lw=2)
-        ax[0,2].set_title('coordinate loss')
-        modelrecord.write(', t_coor_loss: %s, v_coor_loss: %s' % (t_loss_epoch_coor,v_loss_epoch_coor))
-
-        # Hurst_loss
         t_loss_epoch_hurst_append.append(t_loss_epoch_hurst)
         v_loss_epoch_hurst_append.append(v_loss_epoch_hurst)
-        try:
-            t_hurst_loss_line.remove(t_hurst_loss_line[0])
-            v_hurst_loss_line.remove(v_hurst_loss_line[0])
-        except Exception:
-            pass
-        t_hurst_loss_line = ax[1,0].plot(epoch_list, t_loss_epoch_hurst_append, 'r', lw=2)
-        v_hurst_loss_line = ax[1,0].plot(epoch_list, v_loss_epoch_hurst_append, 'b', lw=2)
-        ax[1,0].set_title('hurst loss')
-        modelrecord.write(', t_hurst_loss: %s, v_hurst_loss: %s' % (t_loss_epoch_hurst, v_loss_epoch_hurst))
-
-        # Hurst_loss
         t_loss_epoch_diff_append.append(t_loss_epoch_diff)
         v_loss_epoch_diff_append.append(v_loss_epoch_diff)
-        try:
-            t_diff_loss_line.remove(t_diff_loss_line[0])
-            v_diff_loss_line.remove(v_diff_loss_line[0])
-        except Exception:
-            pass
-        t_diff_loss_line = ax[1,1].plot(epoch_list, t_loss_epoch_diff_append, 'r', lw=2)
-        v_diff_loss_line = ax[1,1].plot(epoch_list, v_loss_epoch_diff_append, 'b', lw=2)
-        ax[1,1].set_title('diffusion loss')
-        modelrecord.write(', t_diff_loss: %s, v_diff_loss: %s' % (t_loss_epoch_diff, v_loss_epoch_diff))
-
-        # bg_loss
         t_loss_epoch_bg_append.append(t_loss_epoch_bg)
         v_loss_epoch_bg_append.append(v_loss_epoch_bg)
-        try:
-            t_bg_loss_line.remove(t_bg_loss_line[0])
-            v_bg_loss_line.remove(v_bg_loss_line[0])
-        except Exception:
-            pass
-        t_bg_loss_line = ax[1, 2].plot(epoch_list, t_loss_epoch_bg_append, 'r', lw=2)
-        v_bg_loss_line = ax[1, 2].plot(epoch_list, v_loss_epoch_bg_append, 'b', lw=2)
-        ax[1, 2].set_title('bg loss')
+
+        # ---- Write to text log (identical format to original) ----
+        modelrecord.write('\nepoch %d, t_loss: %s, v_loss: %s' % (epoch, t_loss_epoch, v_loss_epoch))
+        modelrecord.write(', t_cls_loss: %s, v_cls_loss: %s' % (t_loss_epoch_cls, v_loss_epoch_cls))
+        modelrecord.write(', t_coor_loss: %s, v_coor_loss: %s' % (t_loss_epoch_coor, v_loss_epoch_coor))
+        modelrecord.write(', t_hurst_loss: %s, v_hurst_loss: %s' % (t_loss_epoch_hurst, v_loss_epoch_hurst))
+        modelrecord.write(', t_diff_loss: %s, v_diff_loss: %s' % (t_loss_epoch_diff, v_loss_epoch_diff))
         modelrecord.write(', t_bg_loss: %s, v_bg_loss: %s' % (t_loss_epoch_bg, v_loss_epoch_bg))
-        plt.tight_layout()
-        # plt.pause(0.1)
-        plt.savefig(spt.path_saved_model+'learning curve')
+        modelrecord.flush()  # ensure log is written even if the job is killed
+
+        # ---- Write to CSV log (easy to load with pandas later) ----
+        with open(csv_log_path, 'a') as csv_f:
+            csv_f.write(f'{epoch},{t_loss_epoch},{v_loss_epoch},{t_loss_epoch_cls},{v_loss_epoch_cls},'
+                        f'{t_loss_epoch_coor},{v_loss_epoch_coor},{t_loss_epoch_hurst},{v_loss_epoch_hurst},'
+                        f'{t_loss_epoch_diff},{v_loss_epoch_diff},{t_loss_epoch_bg},{v_loss_epoch_bg}\n')
+
+        # ---- Save learning curve plot every 5 epochs or when a new best model is saved ----
+        if epoch % 5 == 0 or no_improvement == 0:
+            fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(15, 8))
+            ax[0,0].plot(epoch_list, t_loss_append, 'r', lw=2, label='train')
+            ax[0,0].plot(epoch_list, v_loss_append, 'b', lw=2, label='val')
+            ax[0,0].set_title('Total loss'); ax[0,0].legend()
+            ax[0,1].plot(epoch_list, t_loss_epoch_cls_append, 'r', lw=2)
+            ax[0,1].plot(epoch_list, v_loss_epoch_cls_append, 'b', lw=2)
+            ax[0,1].set_title('cls loss')
+            ax[0,2].plot(epoch_list, t_loss_epoch_coor_append, 'r', lw=2)
+            ax[0,2].plot(epoch_list, v_loss_epoch_coor_append, 'b', lw=2)
+            ax[0,2].set_title('coordinate loss')
+            ax[1,0].plot(epoch_list, t_loss_epoch_hurst_append, 'r', lw=2)
+            ax[1,0].plot(epoch_list, v_loss_epoch_hurst_append, 'b', lw=2)
+            ax[1,0].set_title('hurst loss')
+            ax[1,1].plot(epoch_list, t_loss_epoch_diff_append, 'r', lw=2)
+            ax[1,1].plot(epoch_list, v_loss_epoch_diff_append, 'b', lw=2)
+            ax[1,1].set_title('diffusion loss')
+            ax[1,2].plot(epoch_list, t_loss_epoch_bg_append, 'r', lw=2)
+            ax[1,2].plot(epoch_list, v_loss_epoch_bg_append, 'b', lw=2)
+            ax[1,2].set_title('bg loss')
+            plt.tight_layout()
+            plt.savefig(spt.path_saved_model + 'learning_curve.png')
+            plt.close('all')
         print("(""epoch", epoch, ")", "Training Loss", t_loss_epoch, "Validation Loss", v_loss_epoch)
         epoch+=1
     end = time.time()
