@@ -3,7 +3,7 @@ Visualize SPTnet Outputs — Python equivalent of Visualize_SPTnet_Outputs.m
 
 Designed to run inside a Jupyter notebook. Import and call `show_video()`.
 
-Usage in a notebook cell:
+Usage in a notebook cell (MAT + GT):
     from inference_script import show_video
     from IPython.display import HTML
 
@@ -19,12 +19,48 @@ Or loop over several videos:
     for i in range(5):
         ani = show_video(..., video_idx=i)
         display(HTML(ani.to_jshtml()))
+
+Usage for per-TIFF CSD3 inference outputs (no GT):
+    ani = show_video(
+        test_data_path='TestData/tiff_output/Example_testdata_000.tif',
+        results_path='Trained_models/inference_results/result_Example_testdata_000.mat',
+        threshold=0.50,
+    )
+    HTML(ani.to_jshtml())
+
+Or auto-match TIFF/result pairs by index:
+    from inference_script import show_tiff_result_by_index
+    ani = show_tiff_result_by_index(pair_index=0, threshold=0.50)
+    HTML(ani.to_jshtml())
+
+To overlay ground truth for TIFF input:
+    ani = show_video(
+        test_data_path='TestData/tiff_output/Example_testdata_000.tif',
+        results_path='Trained_models/inference_results/result_Example_testdata_000.mat',
+        gt_data_path='TestData/Example_testdata.mat',  # contains traceposition/Hlabel/Clabel
+        # gt_video_idx defaults to suffix in TIFF name (_000 -> 0)
+        threshold=0.50,
+    )
+    HTML(ani.to_jshtml())
+
+Or visualize split result directly on MAT (no TIFF in visualization path):
+    from inference_script import show_mat_with_single_result
+    ani = show_mat_with_single_result(
+        test_data_mat_path='TestData/Example_testdata.mat',
+        result_mat_path='Trained_models/inference_results/result_Example_testdata_000.mat',
+        # video_idx defaults to suffix in result filename (_000 -> 0)
+        threshold=0.50,
+    )
+    HTML(ani.to_jshtml())
 """
 
 import os
+import glob
+import re
 import numpy as np
 import h5py
 import scipy.io as sio
+import tifffile
 
 import matplotlib
 matplotlib.use('Agg')   # headless — safe both in notebooks and on the cluster
@@ -78,6 +114,19 @@ def _coerce_trace_to_tx2(raw_trace):
     if arr.shape[1] == 2 and arr.shape[0] >= 2:
         return arr
     return None
+
+
+def _swap_xy_for_track_list(track_list):
+    """
+    Swap x/y columns for every (T,2) track in a per-video GT list.
+    """
+    out = []
+    for tr in track_list:
+        if tr is None:
+            out.append(None)
+        else:
+            out.append(tr[:, [1, 0]])
+    return out
 
 
 def load_test_data(mat_path):
@@ -182,6 +231,18 @@ def load_inference_results(mat_path):
         est_C = est_C[np.newaxis]         # (1, Q)
 
     return obj_perm, xy_perm, est_H, est_C
+
+
+def load_tiff_data(tiff_path):
+    """
+    Load a TIFF stack and return as (N, T, H, W) with N=1.
+    """
+    arr = np.array(tifffile.imread(tiff_path))
+    if arr.ndim == 2:
+        raise ValueError(f"{tiff_path} contains only one frame; need a time series.")
+    if arr.ndim != 3:
+        raise ValueError(f"Unexpected TIFF shape {arr.shape} for {tiff_path}.")
+    return arr[np.newaxis, ...]
 
 
 # ─── Core animation builder ───────────────────────────────────────────────────
@@ -336,7 +397,8 @@ def build_animation(video_frames, gt_pos_list, gt_h_list, gt_c_list,
 # ─── Public notebook API ──────────────────────────────────────────────────────
 
 def show_video(test_data_path, results_path,
-               video_idx=0, threshold=0.90, min_track_len=5, interval=200):
+               video_idx=0, threshold=0.90, min_track_len=5, interval=200,
+               gt_data_path=None, gt_video_idx=None, swap_gt_xy_for_tiff=True):
     """
     Load data and return a FuncAnimation for one video.
 
@@ -351,21 +413,70 @@ def show_video(test_data_path, results_path,
 
     Parameters
     ----------
-    test_data_path : str  — path to original .mat file (video + ground truth)
+    test_data_path : str
+        Path to source video:
+        - `.mat` training/test file (with optional GT), or
+        - `.tif/.tiff` movie stack (no GT overlay).
     results_path   : str  — path to SPTnet inference output .mat file
     video_idx      : int  — which video (0-based)
     threshold      : float — detection confidence threshold
     min_track_len  : int  — min frames active to display a predicted track
     interval       : int  — ms between frames in the animation
+    gt_data_path   : str|None
+        Optional GT `.mat` when `test_data_path` is TIFF.
+    gt_video_idx   : int|None
+        Which sample in `gt_data_path` to use. If None and TIFF filename ends
+        with `_<number>.tif`, that number is used.
+    swap_gt_xy_for_tiff : bool
+        For TIFF input with external GT MAT, swap GT x/y columns to match TIFF
+        orientation produced by this repository's `mat_to_tiff.py`.
 
     Returns
     -------
     matplotlib.animation.FuncAnimation
     """
+    test_ext = os.path.splitext(test_data_path)[1].lower()
+    f_handle = None
+
     print(f"Loading test data from {test_data_path}...")
-    videos, gt_pos, gt_H, gt_C, f_handle = load_test_data(test_data_path)
-    N = videos.shape[0]
-    print(f"  {N} videos, shape per video: {videos.shape[1:]}")
+    if test_ext in ['.tif', '.tiff']:
+        videos = load_tiff_data(test_data_path)
+        gt_pos, gt_H, gt_C = [[]], [[]], [[]]
+        N = 1
+        print(f"  TIFF stack loaded, shape per video: {videos.shape[1:]}")
+
+        if gt_data_path is not None:
+            print(f"Loading GT overlays from {gt_data_path}...")
+            _, gt_pos_all, gt_H_all, gt_C_all, gt_handle = load_test_data(gt_data_path)
+            num_gt = len(gt_pos_all)
+
+            resolved_gt_idx = gt_video_idx
+            if resolved_gt_idx is None:
+                stem = os.path.splitext(os.path.basename(test_data_path))[0]
+                m = re.search(r'_(\d+)$', stem)
+                if m:
+                    resolved_gt_idx = int(m.group(1))
+                else:
+                    resolved_gt_idx = 0
+
+            if resolved_gt_idx < 0 or resolved_gt_idx >= num_gt:
+                gt_handle.close()
+                raise IndexError(
+                    f"gt_video_idx={resolved_gt_idx} out of range for {gt_data_path} "
+                    f"(has {num_gt} videos)."
+                )
+
+            gt_pos = [gt_pos_all[resolved_gt_idx]]
+            gt_H = [gt_H_all[resolved_gt_idx]]
+            gt_C = [gt_C_all[resolved_gt_idx]]
+            if swap_gt_xy_for_tiff:
+                gt_pos = [_swap_xy_for_track_list(gt_pos[0])]
+            gt_handle.close()
+            print(f"  Using GT video index {resolved_gt_idx}.")
+    else:
+        videos, gt_pos, gt_H, gt_C, f_handle = load_test_data(test_data_path)
+        N = videos.shape[0]
+        print(f"  {N} videos, shape per video: {videos.shape[1:]}")
 
     print(f"Loading inference results from {results_path}...")
     obj_est, xy_est, est_H, est_C = load_inference_results(results_path)
@@ -417,5 +528,135 @@ def show_video(test_data_path, results_path,
         interval=interval,
     )
 
+    if f_handle is not None:
+        f_handle.close()
+    return ani
+
+
+def find_tiff_result_pairs(
+    tiff_pattern='TestData/tiff_output/*.tif',
+    result_pattern='Trained_models/inference_results/result_*.mat',
+):
+    """
+    Match TIFF stacks with per-file `result_*.mat` outputs by basename.
+    Returns a sorted list of (tiff_path, result_path).
+    """
+    tiff_files = sorted(glob.glob(tiff_pattern))
+    result_files = sorted(glob.glob(result_pattern))
+
+    result_by_stem = {}
+    for rp in result_files:
+        stem = os.path.splitext(os.path.basename(rp))[0]
+        if stem.startswith('result_'):
+            stem = stem[len('result_'):]
+        result_by_stem[stem] = rp
+
+    pairs = []
+    for tp in tiff_files:
+        t_stem = os.path.splitext(os.path.basename(tp))[0]
+        if t_stem in result_by_stem:
+            pairs.append((tp, result_by_stem[t_stem]))
+    return pairs
+
+
+def show_tiff_result_by_index(
+    pair_index=0,
+    tiff_pattern='TestData/tiff_output/*.tif',
+    result_pattern='Trained_models/inference_results/result_*.mat',
+    gt_data_path=None,
+    gt_video_idx=None,
+    threshold=0.90,
+    min_track_len=5,
+    interval=200,
+):
+    """
+    Convenience wrapper for per-file TIFF + result MAT workflows.
+    """
+    pairs = find_tiff_result_pairs(tiff_pattern=tiff_pattern, result_pattern=result_pattern)
+    if not pairs:
+        raise FileNotFoundError(
+            f"No matched pairs found for TIFF pattern '{tiff_pattern}' and result pattern '{result_pattern}'."
+        )
+    if pair_index < 0 or pair_index >= len(pairs):
+        raise IndexError(f"pair_index={pair_index} out of range [0, {len(pairs)-1}].")
+
+    tiff_path, result_path = pairs[pair_index]
+    print(f"Using pair {pair_index + 1}/{len(pairs)}:")
+    print(f"  TIFF:   {tiff_path}")
+    print(f"  Result: {result_path}")
+
+    return show_video(
+        test_data_path=tiff_path,
+        results_path=result_path,
+        video_idx=0,
+        threshold=threshold,
+        min_track_len=min_track_len,
+        interval=interval,
+        gt_data_path=gt_data_path,
+        gt_video_idx=gt_video_idx,
+    )
+
+
+def show_mat_with_single_result(
+    test_data_mat_path,
+    result_mat_path,
+    video_idx=None,
+    threshold=0.90,
+    min_track_len=5,
+    interval=200,
+):
+    """
+    Visualize one split `result_..._NNN.mat` directly on the source MAT video.
+
+    This avoids TIFF loading during visualization. If `video_idx` is None, it
+    is inferred from the trailing `_NNN` in `result_mat_path` (fallback: 0).
+    """
+    if video_idx is None:
+        stem = os.path.splitext(os.path.basename(result_mat_path))[0]
+        m = re.search(r'_(\d+)$', stem)
+        video_idx = int(m.group(1)) if m else 0
+
+    print(f"Loading test data from {test_data_mat_path}...")
+    videos, gt_pos, gt_H, gt_C, f_handle = load_test_data(test_data_mat_path)
+    N = videos.shape[0]
+    print(f"  {N} videos, shape per video: {videos.shape[1:]}")
+
+    if video_idx < 0 or video_idx >= N:
+        f_handle.close()
+        raise IndexError(f"video_idx={video_idx} out of range [0, {N-1}] for {test_data_mat_path}.")
+
+    print(f"Loading split inference result from {result_mat_path}...")
+    obj_est, xy_est, est_H, est_C = load_inference_results(result_mat_path)
+    if obj_est.shape[0] != 1:
+        f_handle.close()
+        raise ValueError(
+            f"Expected split result with N=1, got shape {obj_est.shape}. "
+            "Use show_video(...) for multi-video result files."
+        )
+
+    num_queries = obj_est.shape[2]
+    h_row = np.asarray(est_H[0], dtype=float).ravel()
+    c_row = np.asarray(est_C[0], dtype=float).ravel()
+    print(f"  Using MAT video index {video_idx} with split result index 0.")
+    print(
+        "  parameter ranges: "
+        f"H[{np.nanmin(h_row):.4f}, {np.nanmax(h_row):.4f}]  "
+        f"D[{np.nanmin(c_row):.4f}, {np.nanmax(c_row):.4f}]"
+    )
+
+    ani = build_animation(
+        video_frames=videos[video_idx],
+        gt_pos_list=gt_pos[video_idx] if video_idx < len(gt_pos) else [],
+        gt_h_list=gt_H[video_idx]     if video_idx < len(gt_H) else [],
+        gt_c_list=gt_C[video_idx]     if video_idx < len(gt_C) else [],
+        obj_est=obj_est[0],
+        xy_est=xy_est[0],
+        est_H=est_H[0],
+        est_C=est_C[0],
+        threshold=threshold,
+        min_track_len=min_track_len,
+        num_queries=num_queries,
+        interval=interval,
+    )
     f_handle.close()
     return ani

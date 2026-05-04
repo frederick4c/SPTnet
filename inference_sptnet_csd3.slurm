@@ -42,7 +42,7 @@ echo "Starting Parallel SPTnet inference on CSD3 Ampere node..."
 
 ~/envs/SPTnet/bin/python SPTnet_inference_parallel_cli.py \
     -m ./Trained_models/full_run/trained_model \
-    -d "./TestData/tiff_output/*.tif" \
+    -d "./TestData/tiff_output/testdata_*.tif" \
     -b 8
 
 echo "Inference job completed."

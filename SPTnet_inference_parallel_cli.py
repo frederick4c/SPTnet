@@ -169,6 +169,71 @@ def get_num_queries(ckpt_path):
             return sd[k].shape[0]
     raise ValueError("query_embed.weight not found")
 
+
+def _normalize_state_dict_keys(state_dict, model):
+    """
+    Make checkpoint keys compatible with model keys for common wrapper cases:
+    - checkpoint from DataParallel: keys start with 'module.'
+    """
+    if not isinstance(state_dict, dict):
+        raise TypeError(f"Expected state_dict dict, got {type(state_dict)}")
+
+    model_keys = list(model.state_dict().keys())
+    if not model_keys:
+        return state_dict
+
+    ckpt_keys = list(state_dict.keys())
+    if not ckpt_keys:
+        return state_dict
+
+    ckpt_has_module = all(k.startswith("module.") for k in ckpt_keys)
+    model_has_module = all(k.startswith("module.") for k in model_keys)
+
+    if ckpt_has_module and not model_has_module:
+        return {k[len("module."):]: v for k, v in state_dict.items()}
+    if model_has_module and not ckpt_has_module:
+        return {f"module.{k}": v for k, v in state_dict.items()}
+    return state_dict
+
+
+def _load_checkpoint_strict_enough(model, ckpt_path, device):
+    """
+    Load checkpoint and print diagnostics. Raise if nearly nothing loads.
+    """
+    ckpt = torch.load(ckpt_path, map_location=device)
+    if isinstance(ckpt, dict) and "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
+        sd = ckpt["state_dict"]
+    else:
+        sd = ckpt
+
+    sd = _normalize_state_dict_keys(sd, model)
+    incompatible = model.load_state_dict(sd, strict=False)
+    missing = list(incompatible.missing_keys)
+    unexpected = list(incompatible.unexpected_keys)
+    total = len(model.state_dict())
+    loaded = total - len(missing)
+    frac = loaded / max(total, 1)
+
+    print(
+        f"Checkpoint load summary: loaded {loaded}/{total} tensors "
+        f"({frac*100:.1f}%), missing={len(missing)}, unexpected={len(unexpected)}"
+    )
+    if missing:
+        print("  First missing keys:", missing[:8])
+    if unexpected:
+        print("  First unexpected keys:", unexpected[:8])
+
+    if loaded == 0:
+        raise RuntimeError(
+            "No model weights were loaded from checkpoint. "
+            "This usually means architecture/key mismatch."
+        )
+    if frac < 0.9:
+        raise RuntimeError(
+            f"Only {loaded}/{total} tensors loaded (<90%). "
+            "Checkpoint and inference model are likely incompatible."
+        )
+
 def parse_args():
     p = argparse.ArgumentParser(description="SPTnet Parallel Inference on Colab/CSD3")
     p.add_argument('-m', '--model-path', type=str, required=True, help="Path to the trained model file (e.g. .../trained_model)")
@@ -206,6 +271,8 @@ def main():
         return
 
     print(f"Found {len(filename_test)} test files.")
+    for i, fp in enumerate(filename_test, start=1):
+        print(f"  [{i:03d}] {fp}")
 
     num_q = get_num_queries(model_path)
 
@@ -249,7 +316,7 @@ def main():
         input_channel=512
     ).to(device)
 
-    model.load_state_dict(torch.load(spt.path_saved_model), strict=False)
+    _load_checkpoint_strict_enough(model, spt.path_saved_model, device)
     model.eval()
 
     # Optional: if you really have multiple GPUs, uncomment the next 2 lines.

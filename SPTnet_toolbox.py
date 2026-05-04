@@ -368,7 +368,22 @@ class SPTnet_toolbox(object):
 
     ############## test_attentionSPT ################################################
     def inference_with_SPTnet(self, model, testdata):
-        model.load_state_dict(torch.load(self.path_saved_model, map_location=self.device),strict=False)
+        incompatible = model.load_state_dict(
+            torch.load(self.path_saved_model, map_location=self.device),
+            strict=False
+        )
+        missing = list(incompatible.missing_keys)
+        unexpected = list(incompatible.unexpected_keys)
+        total = len(model.state_dict())
+        loaded = total - len(missing)
+        print(
+            f"Checkpoint load summary: loaded {loaded}/{total} tensors, "
+            f"missing={len(missing)}, unexpected={len(unexpected)}"
+        )
+        if loaded == 0:
+            raise RuntimeError(
+                "No model weights were loaded. Checkpoint/model mismatch is likely."
+            )
         model.eval()
         total = 0
         total_obj_est = []
