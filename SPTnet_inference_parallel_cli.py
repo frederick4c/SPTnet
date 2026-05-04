@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import glob
+import time
 from collections import defaultdict
 from os.path import dirname, basename
 
@@ -242,6 +243,7 @@ def parse_args():
     return p.parse_args()
 
 def main():
+    t0_all = time.time()
     args = parse_args()
     
     model_path = args.model_path
@@ -254,6 +256,11 @@ def main():
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
     print(f"Loading model from: {model_path}")
+    print(f"torch.cuda.is_available() = {torch.cuda.is_available()}")
+    print(f"Selected device = {device}")
+    if torch.cuda.is_available():
+        print(f"CUDA device name = {torch.cuda.get_device_name(0)}")
+        print(f"CUDA device count = {torch.cuda.device_count()}")
 
     # Expand data file patterns
     filename_test = []
@@ -274,7 +281,9 @@ def main():
     for i, fp in enumerate(filename_test, start=1):
         print(f"  [{i:03d}] {fp}")
 
+    t0 = time.time()
     num_q = get_num_queries(model_path)
+    print(f"Read checkpoint metadata in {time.time() - t0:.2f}s (num_queries={num_q})")
 
     spt = SPTnet_toolbox(
         path_saved_model=model_path,
@@ -316,7 +325,9 @@ def main():
         input_channel=512
     ).to(device)
 
+    t0 = time.time()
     _load_checkpoint_strict_enough(model, spt.path_saved_model, device)
+    print(f"Loaded checkpoint into model in {time.time() - t0:.2f}s")
     model.eval()
 
     # Optional: if you really have multiple GPUs, uncomment the next 2 lines.
@@ -329,7 +340,9 @@ def main():
 
     print(f"Starting batched inference (batch_size={infer_batch_size})...")
     # Batch only samples with the same (T, H, W), otherwise torch.stack will fail.
+    t0_inf = time.time()
     for shape_key, indices in all_samples.shape_groups.items():
+        print(f"  Shape group {shape_key}: {len(indices)} sample(s)")
         subset = SubsetByIndices(all_samples, indices)
         test_dataloader = DataLoader(
             subset,
@@ -339,6 +352,7 @@ def main():
             collate_fn=collate_inference
         )
         all_results.extend(run_batched_inference(model, test_dataloader))
+    print(f"Inference pass completed in {time.time() - t0_inf:.2f}s")
 
     results_by_file = defaultdict(lambda: {
         'obj_estimation': [],
@@ -356,6 +370,7 @@ def main():
     save_dir = os.path.join(dirname(spt.path_saved_model), 'inference_results')
     os.makedirs(save_dir, exist_ok=True)
 
+    t0_save = time.time()
     for file_path, rec in results_by_file.items():
         base = os.path.splitext(basename(file_path))[0] + '.mat'
         estimation_obj = np.vstack(rec['obj_estimation'])
@@ -375,7 +390,9 @@ def main():
             }
         )
 
+    print(f"Result saving completed in {time.time() - t0_save:.2f}s")
     print(f'Done. Saved inference results to: {save_dir}')
+    print(f"Total runtime: {time.time() - t0_all:.2f}s")
 
 if __name__ == "__main__":
     main()
