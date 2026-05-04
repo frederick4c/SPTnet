@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1                   # Number of scripts to run
 #SBATCH --cpus-per-task=4            # Number of CPU cores per task
 #SBATCH --gres=gpu:1                 # Number of GPUs per node (A100)
-#SBATCH --time=00:10:00              # Time limit hrs:min:sec
+#SBATCH --time=00:30:00              # Time limit hrs:min:sec
 #SBATCH --output=sptnet_infer_par_%j.out # Standard output log (%j = job ID)
 #SBATCH --error=sptnet_infer_par_%j.err  # Standard error log
 #SBATCH --export=ALL                 # Export all environment variables to the job
@@ -36,7 +36,6 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo "Diagnostic info for virtual environment:"
 which python
-pip list
 python -c "import sys; print(sys.path)"
 
 echo "Starting Parallel SPTnet inference on CSD3 Ampere node..."
