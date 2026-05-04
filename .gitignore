@@ -14,3 +14,4 @@ __pycache__
 
 # results
 /Trained_models/inference_results/
+Trained_models/full_run/
