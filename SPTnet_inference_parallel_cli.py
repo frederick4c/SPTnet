@@ -35,9 +35,10 @@ class FileSampleDataset(Dataset):
     file ownership, so we can batch many samples on the GPU and still save one
     output .mat per original file.
     """
-    def __init__(self, file_list):
+    def __init__(self, file_list, mat_clip_index=0):
         self.records = []
         self.shape_groups = defaultdict(list)
+        self.mat_clip_index = int(mat_clip_index)
 
         for file_path in file_list:
             ext = os.path.splitext(file_path)[1].lower()
@@ -72,16 +73,20 @@ class FileSampleDataset(Dataset):
                         self.shape_groups[shape_key].append(len(self.records))
                         self.records.append(record)
                     elif td.ndim == 4:
+                        if self.mat_clip_index < 0 or self.mat_clip_index >= td.shape[0]:
+                            raise IndexError(
+                                f"mat_clip_index={self.mat_clip_index} out of range for {file_path} "
+                                f"(N={td.shape[0]})."
+                            )
                         shape_key = tuple(td.shape[1:])
-                        for i in range(td.shape[0]):
-                            record = {
-                                'file_path': file_path,
-                                'ext': ext,
-                                'sample_idx': i,
-                                'shape_key': shape_key,
-                            }
-                            self.shape_groups[shape_key].append(len(self.records))
-                            self.records.append(record)
+                        record = {
+                            'file_path': file_path,
+                            'ext': ext,
+                            'sample_idx': self.mat_clip_index,
+                            'shape_key': shape_key,
+                        }
+                        self.shape_groups[shape_key].append(len(self.records))
+                        self.records.append(record)
                     else:
                         raise ValueError(f"'timelapsedata' must be 3D or 4D, got {td.shape} in {file_path}.")
 
@@ -252,6 +257,12 @@ def parse_args():
     p.add_argument('-m', '--model-path', type=str, required=True, help="Path to the trained model file (e.g. .../trained_model)")
     p.add_argument('-d', '--data', type=str, nargs='+', required=True, help="Path(s) to test data files (.mat or .tif)")
     p.add_argument('-b', '--batch-size', type=int, default=8, help="Batch size for parallel inference (default: 8)")
+    p.add_argument(
+        '--mat-clip-index',
+        type=int,
+        default=0,
+        help="For 4D MAT files (N,T,H,W), only run this clip index (default: 0).",
+    )
     return p.parse_args()
 
 def main():
@@ -349,7 +360,8 @@ def main():
     #     model = nn.DataParallel(model)
 
     print("Initializing FileSampleDataset...")
-    all_samples = FileSampleDataset(filename_test)
+    print(f"MAT clip index for 4D files: {args.mat_clip_index}")
+    all_samples = FileSampleDataset(filename_test, mat_clip_index=args.mat_clip_index)
     all_results = []
 
     print(f"Starting batched inference (batch_size={infer_batch_size})...")

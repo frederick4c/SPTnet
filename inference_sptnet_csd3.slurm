@@ -55,7 +55,8 @@ log "Starting Parallel SPTnet inference on CSD3 Ampere node..."
 
 ~/envs/SPTnet/bin/python -u SPTnet_inference_parallel_cli.py \
     -m ./Trained_models/full_run/trained_model \
-    -d "./TestData/tiff_output/testdata_*.tif" \
-    -b 8
+    -d "./TestData/testdata_*.mat" \
+    -b 8 \
+    --mat-clip-index 0
 
 log "Inference job completed."

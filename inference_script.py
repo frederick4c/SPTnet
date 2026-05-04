@@ -38,7 +38,7 @@ To overlay ground truth for TIFF input:
         test_data_path='TestData/tiff_output/Example_testdata_000.tif',
         results_path='Trained_models/inference_results/result_Example_testdata_000.mat',
         gt_data_path='TestData/Example_testdata.mat',  # contains traceposition/Hlabel/Clabel
-        # gt_video_idx defaults to suffix in TIFF name (_000 -> 0)
+        # by default, GT video index is auto-matched by pixel similarity
         threshold=0.50,
     )
     HTML(ani.to_jshtml())
@@ -126,6 +126,171 @@ def _swap_xy_for_track_list(track_list):
             out.append(None)
         else:
             out.append(tr[:, [1, 0]])
+    return out
+
+
+def _normalize_video_stack(videos):
+    """
+    Per-video min-max normalization for robust clip matching.
+    Accepts (T,H,W) or (N,T,H,W), returns float32 with same shape.
+    """
+    arr = np.asarray(videos, dtype=np.float32)
+    if arr.ndim == 3:
+        vmin = np.nanmin(arr)
+        vmax = np.nanmax(arr)
+        return (arr - vmin) / (vmax - vmin + 1e-8)
+    if arr.ndim == 4:
+        flat = arr.reshape(arr.shape[0], -1)
+        vmin = np.nanmin(flat, axis=1)[:, None, None, None]
+        vmax = np.nanmax(flat, axis=1)[:, None, None, None]
+        return (arr - vmin) / (vmax - vmin + 1e-8)
+    raise ValueError(f"Expected 3D or 4D video array, got shape {arr.shape}.")
+
+
+def _find_best_matching_video_index(single_video, candidate_videos):
+    """
+    Find candidate index whose video best matches `single_video` by MAE after
+    per-video normalization.
+    single_video: (T,H,W), candidate_videos: (N,T,H,W)
+    Returns (best_idx, best_mae).
+    """
+    sv = _normalize_video_stack(single_video)
+    cv = _normalize_video_stack(candidate_videos)
+    if cv.ndim != 4 or sv.ndim != 3:
+        raise ValueError("Unexpected input shapes for video matching.")
+    if cv.shape[1:] != sv.shape:
+        raise ValueError(
+            f"Shape mismatch for matching: candidates {cv.shape[1:]} vs single {sv.shape}"
+        )
+    mae = np.mean(np.abs(cv - sv[np.newaxis, ...]), axis=(1, 2, 3))
+    best_idx = int(np.argmin(mae))
+    return best_idx, float(mae[best_idx])
+
+
+def _prediction_alignment_score(video_frames, obj_est, xy_est, threshold=0.5, min_track_len=1):
+    """
+    Score prediction alignment by mean intensity sampled at predicted active points.
+    Higher is better.
+    """
+    predict = obj_est > threshold  # (T,Q)
+    if min_track_len > 1:
+        keep_q = predict.sum(axis=0) >= min_track_len
+        predict = predict & keep_q[np.newaxis, :]
+
+    ts, qs = np.where(predict)
+    if ts.size == 0:
+        return float("-inf")
+
+    x = xy_est[ts, qs, 0]
+    y = xy_est[ts, qs, 1]
+    xi = np.rint(x).astype(int)
+    yi = np.rint(y).astype(int)
+    H, W = video_frames.shape[1], video_frames.shape[2]
+    valid = (xi >= 0) & (xi < W) & (yi >= 0) & (yi < H)
+    if not np.any(valid):
+        return float("-inf")
+
+    return float(np.mean(video_frames[ts[valid], yi[valid], xi[valid]]))
+
+
+def _calibrate_prediction_xy(video_frames, obj_est, xy_est, threshold=0.5, min_track_len=1):
+    """
+    Try (swap/no-swap) x (delta {-1,0,+1}) and pick best prediction alignment.
+    Returns (xy_best, best_swap, best_delta, best_score).
+    """
+    best_score = float("-inf")
+    best_swap = False
+    best_delta = 0
+    best_xy = xy_est
+
+    for swap in (False, True):
+        base = xy_est[..., [1, 0]] if swap else xy_est
+        for delta in (-1.0, 0.0, 1.0):
+            cand = base + delta
+            score = _prediction_alignment_score(
+                video_frames, obj_est, cand, threshold=threshold, min_track_len=min_track_len
+            )
+            if score > best_score:
+                best_score = score
+                best_swap = swap
+                best_delta = delta
+                best_xy = cand
+
+    return best_xy, best_swap, best_delta, best_score
+
+
+def _gt_alignment_score(video_frames, gt_pos_list, offset=32.0, swap_xy=False):
+    """
+    Score GT alignment by mean intensity sampled at GT points after mapping:
+    (x,y) -> (x+offset, y+offset), optionally swapping x/y.
+    """
+    vals = []
+    H, W = video_frames.shape[1], video_frames.shape[2]
+
+    for pos in gt_pos_list:
+        if pos is None or pos.shape[0] != video_frames.shape[0]:
+            continue
+        x = pos[:, 1] if swap_xy else pos[:, 0]
+        y = pos[:, 0] if swap_xy else pos[:, 1]
+        x = x + offset
+        y = y + offset
+        xi = np.rint(x).astype(int)
+        yi = np.rint(y).astype(int)
+        t = np.arange(video_frames.shape[0])
+        valid = (~np.isnan(x)) & (~np.isnan(y)) & (xi >= 0) & (xi < W) & (yi >= 0) & (yi < H)
+        if np.any(valid):
+            vals.extend(video_frames[t[valid], yi[valid], xi[valid]])
+
+    if not vals:
+        return float("-inf")
+    return float(np.mean(vals))
+
+
+def _best_gt_transform_for_idx(video_frames, gt_pos_list, offsets=(32.0, 33.0, 1.0)):
+    """
+    Pick best (offset, swap_xy) for one GT video index.
+    Returns (offset, swap_xy, score).
+    """
+    best_score = float("-inf")
+    best_offset = 32.0
+    best_swap = False
+    for off in offsets:
+        for sw in (False, True):
+            sc = _gt_alignment_score(video_frames, gt_pos_list, offset=off, swap_xy=sw)
+            if sc > best_score:
+                best_score = sc
+                best_offset = off
+                best_swap = sw
+    return best_offset, best_swap, best_score
+
+
+def _find_best_gt_video_and_transform(video_frames, gt_pos_all, offsets=(32.0, 33.0, 1.0)):
+    """
+    Search all GT video indices and transforms; return the best match.
+    Returns (best_idx, best_offset, best_swap, best_score).
+    """
+    best = (0, 32.0, False, float("-inf"))
+    for idx, pos_list in enumerate(gt_pos_all):
+        off, sw, sc = _best_gt_transform_for_idx(video_frames, pos_list, offsets=offsets)
+        if sc > best[3]:
+            best = (idx, off, sw, sc)
+    return best
+
+
+def _apply_gt_transform_for_builder(gt_pos_list, offset=32.0, swap_xy=False):
+    """
+    Build transformed GT tracks so downstream builder (which adds +32) is correct.
+    """
+    out = []
+    delta = float(offset) - 32.0
+    for pos in gt_pos_list:
+        if pos is None:
+            out.append(None)
+            continue
+        p = pos[:, [1, 0]] if swap_xy else pos.copy()
+        if abs(delta) > 1e-12:
+            p = p + delta
+        out.append(p)
     return out
 
 
@@ -398,7 +563,8 @@ def build_animation(video_frames, gt_pos_list, gt_h_list, gt_c_list,
 
 def show_video(test_data_path, results_path,
                video_idx=0, threshold=0.90, min_track_len=5, interval=200,
-               gt_data_path=None, gt_video_idx=None, swap_gt_xy_for_tiff=True):
+               gt_data_path=None, gt_video_idx=None, swap_gt_xy_for_tiff=True,
+               auto_match_gt_video=True):
     """
     Load data and return a FuncAnimation for one video.
 
@@ -428,8 +594,11 @@ def show_video(test_data_path, results_path,
         Which sample in `gt_data_path` to use. If None and TIFF filename ends
         with `_<number>.tif`, that number is used.
     swap_gt_xy_for_tiff : bool
-        For TIFF input with external GT MAT, swap GT x/y columns to match TIFF
-        orientation produced by this repository's `mat_to_tiff.py`.
+        Legacy override for TIFF + external GT mode when auto-matching is off.
+    auto_match_gt_video : bool
+        For TIFF input with external GT MAT and unspecified `gt_video_idx`,
+        auto-match the TIFF clip to the best GT video and GT transform
+        (offset/swap) by trajectory intensity score.
 
     Returns
     -------
@@ -447,17 +616,50 @@ def show_video(test_data_path, results_path,
 
         if gt_data_path is not None:
             print(f"Loading GT overlays from {gt_data_path}...")
-            _, gt_pos_all, gt_H_all, gt_C_all, gt_handle = load_test_data(gt_data_path)
+            gt_videos_all, gt_pos_all, gt_H_all, gt_C_all, gt_handle = load_test_data(gt_data_path)
             num_gt = len(gt_pos_all)
 
             resolved_gt_idx = gt_video_idx
-            if resolved_gt_idx is None:
-                stem = os.path.splitext(os.path.basename(test_data_path))[0]
-                m = re.search(r'_(\d+)$', stem)
-                if m:
-                    resolved_gt_idx = int(m.group(1))
-                else:
+            resolved_gt_offset = 32.0
+            resolved_gt_swap = bool(swap_gt_xy_for_tiff)
+
+            if auto_match_gt_video:
+                if resolved_gt_idx is None and num_gt > 1:
+                    resolved_gt_idx, resolved_gt_offset, resolved_gt_swap, gt_score = _find_best_gt_video_and_transform(
+                        videos[0], gt_pos_all
+                    )
+                    print(
+                        f"  Auto-matched GT index {resolved_gt_idx} with "
+                        f"offset={resolved_gt_offset:.1f}, swap_xy={resolved_gt_swap} "
+                        f"(trajectory score={gt_score:.3f})."
+                    )
+                elif resolved_gt_idx is None:
                     resolved_gt_idx = 0
+                    resolved_gt_offset, resolved_gt_swap, gt_score = _best_gt_transform_for_idx(
+                        videos[0], gt_pos_all[resolved_gt_idx]
+                    )
+                    print(
+                        f"  Single GT video; using index 0 with "
+                        f"offset={resolved_gt_offset:.1f}, swap_xy={resolved_gt_swap} "
+                        f"(trajectory score={gt_score:.3f})."
+                    )
+                else:
+                    resolved_gt_offset, resolved_gt_swap, gt_score = _best_gt_transform_for_idx(
+                        videos[0], gt_pos_all[resolved_gt_idx]
+                    )
+                    print(
+                        f"  Using provided gt_video_idx={resolved_gt_idx} with "
+                        f"best offset={resolved_gt_offset:.1f}, swap_xy={resolved_gt_swap} "
+                        f"(trajectory score={gt_score:.3f})."
+                    )
+            else:
+                if resolved_gt_idx is None:
+                    stem = os.path.splitext(os.path.basename(test_data_path))[0]
+                    m = re.search(r'_(\d+)$', stem)
+                    if m:
+                        resolved_gt_idx = int(m.group(1))
+                    else:
+                        resolved_gt_idx = 0
 
             if resolved_gt_idx < 0 or resolved_gt_idx >= num_gt:
                 gt_handle.close()
@@ -466,11 +668,12 @@ def show_video(test_data_path, results_path,
                     f"(has {num_gt} videos)."
                 )
 
-            gt_pos = [gt_pos_all[resolved_gt_idx]]
+            gt_pos_one = gt_pos_all[resolved_gt_idx]
             gt_H = [gt_H_all[resolved_gt_idx]]
             gt_C = [gt_C_all[resolved_gt_idx]]
-            if swap_gt_xy_for_tiff:
-                gt_pos = [_swap_xy_for_track_list(gt_pos[0])]
+            gt_pos = [_apply_gt_transform_for_builder(
+                gt_pos_one, offset=resolved_gt_offset, swap_xy=resolved_gt_swap
+            )]
             gt_handle.close()
             print(f"  Using GT video index {resolved_gt_idx}.")
     else:
@@ -512,6 +715,15 @@ def show_video(test_data_path, results_path,
         f"D[{np.nanmin(c_row):.4f}, {np.nanmax(c_row):.4f}]"
     )
 
+    xy_view, pred_swap, pred_delta, pred_score = _calibrate_prediction_xy(
+        videos[idx], obj_est[idx], xy_est[idx],
+        threshold=threshold, min_track_len=min_track_len
+    )
+    print(
+        f"  Prediction mapping: swap_xy={pred_swap}, delta={pred_delta:+.1f} px "
+        f"(alignment score={pred_score:.3f})"
+    )
+
     print(f"Building animation for video {idx}  (threshold={threshold})...")
     ani = build_animation(
         video_frames=videos[idx],
@@ -519,7 +731,7 @@ def show_video(test_data_path, results_path,
         gt_h_list=gt_H[idx]     if idx < len(gt_H)  else [],
         gt_c_list=gt_C[idx]     if idx < len(gt_C)  else [],
         obj_est=obj_est[idx],
-        xy_est=xy_est[idx],
+        xy_est=xy_view,
         est_H=est_H[idx],
         est_C=est_C[idx],
         threshold=threshold,
@@ -565,6 +777,7 @@ def show_tiff_result_by_index(
     result_pattern='Trained_models/inference_results/result_*.mat',
     gt_data_path=None,
     gt_video_idx=None,
+    auto_match_gt_video=True,
     threshold=0.90,
     min_track_len=5,
     interval=200,
@@ -594,6 +807,7 @@ def show_tiff_result_by_index(
         interval=interval,
         gt_data_path=gt_data_path,
         gt_video_idx=gt_video_idx,
+        auto_match_gt_video=auto_match_gt_video,
     )
 
 
@@ -601,6 +815,7 @@ def show_mat_with_single_result(
     test_data_mat_path,
     result_mat_path,
     video_idx=None,
+    auto_match_video_idx=True,
     threshold=0.90,
     min_track_len=5,
     interval=200,
@@ -611,15 +826,34 @@ def show_mat_with_single_result(
     This avoids TIFF loading during visualization. If `video_idx` is None, it
     is inferred from the trailing `_NNN` in `result_mat_path` (fallback: 0).
     """
-    if video_idx is None:
-        stem = os.path.splitext(os.path.basename(result_mat_path))[0]
-        m = re.search(r'_(\d+)$', stem)
-        video_idx = int(m.group(1)) if m else 0
-
     print(f"Loading test data from {test_data_mat_path}...")
     videos, gt_pos, gt_H, gt_C, f_handle = load_test_data(test_data_mat_path)
     N = videos.shape[0]
     print(f"  {N} videos, shape per video: {videos.shape[1:]}")
+
+    if video_idx is None:
+        if auto_match_video_idx and N > 1:
+            stem = os.path.splitext(os.path.basename(result_mat_path))[0]
+            if stem.startswith('result_'):
+                stem = stem[len('result_'):]
+            tiff_candidate = os.path.join(
+                os.path.dirname(test_data_mat_path), 'tiff_output', stem + '.tif'
+            )
+            if os.path.exists(tiff_candidate):
+                tiff_video = load_tiff_data(tiff_candidate)[0]
+                video_idx, match_mae = _find_best_matching_video_index(tiff_video, videos)
+                print(
+                    f"  Auto-matched result to MAT video index {video_idx} "
+                    f"using {tiff_candidate} (normalized MAE={match_mae:.4f})."
+                )
+            else:
+                stem2 = os.path.splitext(os.path.basename(result_mat_path))[0]
+                m = re.search(r'_(\d+)$', stem2)
+                video_idx = int(m.group(1)) if m else 0
+        else:
+            stem = os.path.splitext(os.path.basename(result_mat_path))[0]
+            m = re.search(r'_(\d+)$', stem)
+            video_idx = int(m.group(1)) if m else 0
 
     if video_idx < 0 or video_idx >= N:
         f_handle.close()
