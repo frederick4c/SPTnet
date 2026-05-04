@@ -3,6 +3,7 @@ import sys
 import os
 import glob
 import time
+import tempfile
 from collections import defaultdict
 from os.path import dirname, basename
 
@@ -158,12 +159,20 @@ def run_batched_inference(model, dataloader):
                 })
     return results
 
-def get_num_queries(ckpt_path):
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    if "state_dict" in ckpt:
-        sd = ckpt["state_dict"]
+def _extract_state_dict(ckpt_obj):
+    if isinstance(ckpt_obj, dict) and "state_dict" in ckpt_obj and isinstance(ckpt_obj["state_dict"], dict):
+        return ckpt_obj["state_dict"]
+    return ckpt_obj
+
+
+def get_num_queries(ckpt_path=None, state_dict=None):
+    if state_dict is None:
+        if ckpt_path is None:
+            raise ValueError("Either ckpt_path or state_dict must be provided.")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        sd = _extract_state_dict(ckpt)
     else:
-        sd = ckpt
+        sd = state_dict
     # read query_embed size
     for k in sd:
         if "query_embed.weight" in k:
@@ -197,15 +206,18 @@ def _normalize_state_dict_keys(state_dict, model):
     return state_dict
 
 
-def _load_checkpoint_strict_enough(model, ckpt_path, device):
+def _load_checkpoint_strict_enough(model, ckpt_path=None, device=None, state_dict=None):
     """
     Load checkpoint and print diagnostics. Raise if nearly nothing loads.
     """
-    ckpt = torch.load(ckpt_path, map_location=device)
-    if isinstance(ckpt, dict) and "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-        sd = ckpt["state_dict"]
+    if state_dict is None:
+        if ckpt_path is None:
+            raise ValueError("Either ckpt_path or state_dict must be provided.")
+        map_loc = device if device is not None else "cpu"
+        ckpt = torch.load(ckpt_path, map_location=map_loc)
+        sd = _extract_state_dict(ckpt)
     else:
-        sd = ckpt
+        sd = state_dict
 
     sd = _normalize_state_dict_keys(sd, model)
     incompatible = model.load_state_dict(sd, strict=False)
@@ -282,7 +294,9 @@ def main():
         print(f"  [{i:03d}] {fp}")
 
     t0 = time.time()
-    num_q = get_num_queries(model_path)
+    ckpt_cpu = torch.load(model_path, map_location="cpu")
+    state_dict_cpu = _extract_state_dict(ckpt_cpu)
+    num_q = get_num_queries(state_dict=state_dict_cpu)
     print(f"Read checkpoint metadata in {time.time() - t0:.2f}s (num_queries={num_q})")
 
     spt = SPTnet_toolbox(
@@ -326,7 +340,7 @@ def main():
     ).to(device)
 
     t0 = time.time()
-    _load_checkpoint_strict_enough(model, spt.path_saved_model, device)
+    _load_checkpoint_strict_enough(model, state_dict=state_dict_cpu)
     print(f"Loaded checkpoint into model in {time.time() - t0:.2f}s")
     model.eval()
 
@@ -380,8 +394,24 @@ def main():
         estimation_C = np.vstack(rec['estimation_C'])
 
         output_path = os.path.join(save_dir, 'result_' + basename(base))
+        if os.path.exists(output_path):
+            print(f"Overwriting existing result file: {output_path}")
+        else:
+            print(f"Writing new result file: {output_path}")
+
+        # Write atomically: save to temp file in same directory, then replace.
+        # This prevents stale/partial files if a job is interrupted during save.
+        with tempfile.NamedTemporaryFile(
+            mode='wb',
+            suffix='.mat',
+            prefix='tmp_result_',
+            dir=save_dir,
+            delete=False
+        ) as tf:
+            tmp_output_path = tf.name
+
         sio.savemat(
-            output_path,
+            tmp_output_path,
             mdict={
                 'obj_estimation': estimation_obj,
                 'estimation_xy': estimation_xy,
@@ -389,6 +419,7 @@ def main():
                 'estimation_C': estimation_C,
             }
         )
+        os.replace(tmp_output_path, output_path)
 
     print(f"Result saving completed in {time.time() - t0_save:.2f}s")
     print(f'Done. Saved inference results to: {save_dir}')
