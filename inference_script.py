@@ -3,7 +3,7 @@ Visualize SPTnet Outputs — Python equivalent of Visualize_SPTnet_Outputs.m
 
 Designed to run inside a Jupyter notebook. Import and call `show_video()`.
 
-Usage in a notebook cell (MAT + GT):
+Usage in a notebook cell (MAT + GT; same N in test/result):
     from inference_script import show_video
     from IPython.display import HTML
 
@@ -23,7 +23,7 @@ Or loop over several videos:
 Usage for per-TIFF CSD3 inference outputs (no GT):
     ani = show_video(
         test_data_path='TestData/tiff_output/Example_testdata_000.tif',
-        results_path='Trained_models/inference_results/result_Example_testdata_000.mat',
+        results_path='Trained_models/full_run/inference_results/result_Example_testdata_000.mat',
         threshold=0.50,
     )
     HTML(ani.to_jshtml())
@@ -36,19 +36,18 @@ Or auto-match TIFF/result pairs by index:
 To overlay ground truth for TIFF input:
     ani = show_video(
         test_data_path='TestData/tiff_output/Example_testdata_000.tif',
-        results_path='Trained_models/inference_results/result_Example_testdata_000.mat',
+        results_path='Trained_models/full_run/inference_results/result_Example_testdata_000.mat',
         gt_data_path='TestData/Example_testdata.mat',  # contains traceposition/Hlabel/Clabel
         # by default, GT video index is auto-matched by pixel similarity
         threshold=0.50,
     )
     HTML(ani.to_jshtml())
 
-Or visualize split result directly on MAT (no TIFF in visualization path):
-    from inference_script import show_mat_with_single_result
-    ani = show_mat_with_single_result(
-        test_data_mat_path='TestData/Example_testdata.mat',
-        result_mat_path='Trained_models/inference_results/result_Example_testdata_000.mat',
-        # video_idx defaults to suffix in result filename (_000 -> 0)
+Recommended for CSD3 MAT-first-clip inference outputs:
+    from inference_script import show_mat_result_by_index
+    ani = show_mat_result_by_index(
+        pair_index=0,  # testdata_000 + result_testdata_000
+        mat_clip_index=0,  # first clip in timelapsedata
         threshold=0.50,
     )
     HTML(ani.to_jshtml())
@@ -687,28 +686,53 @@ def show_video(test_data_path, results_path,
     print(f"  obj_estimation: {obj_est.shape}  (N, T, Q)")
     print(f"  estimation_xy:  {xy_est.shape}  (N, T, Q, 2)")
 
-    if N != obj_est.shape[0]:
-        raise ValueError(
-            "Test data and inference results do not match: "
-            f"test videos={N}, result videos={obj_est.shape[0]}. "
-            "Use the same test .mat that was used to generate this result_*.mat."
-        )
+    result_N = obj_est.shape[0]
     if videos.shape[1] != obj_est.shape[1]:
         raise ValueError(
             "Frame count mismatch between test data and inference results: "
             f"test frames={videos.shape[1]}, result frames={obj_est.shape[1]}."
         )
 
-    idx = video_idx
-    if idx >= obj_est.shape[0]:
+    src_idx = int(video_idx)
+    if src_idx < 0 or src_idx >= N:
         raise IndexError(
-            f"video_idx={idx} but results only cover {obj_est.shape[0]} videos.")
-    if idx >= N:
-        raise IndexError(
-            f"video_idx={idx} but test data only has {N} videos.")
+            f"video_idx={src_idx} but test data only has {N} videos."
+        )
 
-    h_row = np.asarray(est_H[idx], dtype=float).ravel()
-    c_row = np.asarray(est_C[idx], dtype=float).ravel()
+    # Support "split result" mode from MAT-per-file inference where each
+    # result_*.mat contains only one inferred clip (N=1), while the source MAT
+    # can still contain many clips.
+    if result_N == N:
+        res_idx = src_idx
+    elif result_N == 1 and N >= 1:
+        res_idx = 0
+        print(
+            f"  Split-result mode detected: test videos={N}, result videos=1. "
+            f"Using test clip {src_idx} with result index 0."
+        )
+    else:
+        raise ValueError(
+            "Test data and inference results do not match: "
+            f"test videos={N}, result videos={result_N}. "
+            "Use matching files, or pass a split result (N=1) with the source MAT."
+        )
+
+    gt_pos_view = gt_pos[src_idx] if src_idx < len(gt_pos) else []
+    gt_h_view = gt_H[src_idx] if src_idx < len(gt_H) else []
+    gt_c_view = gt_C[src_idx] if src_idx < len(gt_C) else []
+
+    # For MAT input, calibrate GT transform similarly to TIFF+GT mode to avoid
+    # x/y swap or offset inconsistencies from MATLAB/Python conventions.
+    if test_ext not in ['.tif', '.tiff'] and gt_pos_view:
+        gt_off, gt_sw, gt_sc = _best_gt_transform_for_idx(videos[src_idx], gt_pos_view)
+        gt_pos_view = _apply_gt_transform_for_builder(gt_pos_view, offset=gt_off, swap_xy=gt_sw)
+        print(
+            f"  GT mapping: offset={gt_off:.1f}, swap_xy={gt_sw} "
+            f"(alignment score={gt_sc:.3f})"
+        )
+
+    h_row = np.asarray(est_H[res_idx], dtype=float).ravel()
+    c_row = np.asarray(est_C[res_idx], dtype=float).ravel()
     print(
         "  parameter ranges: "
         f"H[{np.nanmin(h_row):.4f}, {np.nanmax(h_row):.4f}]  "
@@ -716,7 +740,7 @@ def show_video(test_data_path, results_path,
     )
 
     xy_view, pred_swap, pred_delta, pred_score = _calibrate_prediction_xy(
-        videos[idx], obj_est[idx], xy_est[idx],
+        videos[src_idx], obj_est[res_idx], xy_est[res_idx],
         threshold=threshold, min_track_len=min_track_len
     )
     print(
@@ -724,16 +748,19 @@ def show_video(test_data_path, results_path,
         f"(alignment score={pred_score:.3f})"
     )
 
-    print(f"Building animation for video {idx}  (threshold={threshold})...")
+    print(
+        f"Building animation for test clip {src_idx} "
+        f"(result index {res_idx}, threshold={threshold})..."
+    )
     ani = build_animation(
-        video_frames=videos[idx],
-        gt_pos_list=gt_pos[idx] if idx < len(gt_pos) else [],
-        gt_h_list=gt_H[idx]     if idx < len(gt_H)  else [],
-        gt_c_list=gt_C[idx]     if idx < len(gt_C)  else [],
-        obj_est=obj_est[idx],
+        video_frames=videos[src_idx],
+        gt_pos_list=gt_pos_view,
+        gt_h_list=gt_h_view,
+        gt_c_list=gt_c_view,
+        obj_est=obj_est[res_idx],
         xy_est=xy_view,
-        est_H=est_H[idx],
-        est_C=est_C[idx],
+        est_H=est_H[res_idx],
+        est_C=est_C[res_idx],
         threshold=threshold,
         min_track_len=min_track_len,
         num_queries=num_queries,
@@ -747,7 +774,7 @@ def show_video(test_data_path, results_path,
 
 def find_tiff_result_pairs(
     tiff_pattern='TestData/tiff_output/*.tif',
-    result_pattern='Trained_models/inference_results/result_*.mat',
+    result_pattern='Trained_models/full_run/inference_results/result_*.mat',
 ):
     """
     Match TIFF stacks with per-file `result_*.mat` outputs by basename.
@@ -774,7 +801,7 @@ def find_tiff_result_pairs(
 def show_tiff_result_by_index(
     pair_index=0,
     tiff_pattern='TestData/tiff_output/*.tif',
-    result_pattern='Trained_models/inference_results/result_*.mat',
+    result_pattern='Trained_models/full_run/inference_results/result_*.mat',
     gt_data_path=None,
     gt_video_idx=None,
     auto_match_gt_video=True,
@@ -821,76 +848,87 @@ def show_mat_with_single_result(
     interval=200,
 ):
     """
-    Visualize one split `result_..._NNN.mat` directly on the source MAT video.
-
-    This avoids TIFF loading during visualization. If `video_idx` is None, it
-    is inferred from the trailing `_NNN` in `result_mat_path` (fallback: 0).
+    Backward-compatible wrapper for split MAT result visualization.
+    Prefer `show_mat_result_by_index(...)` for new workflows.
     """
-    print(f"Loading test data from {test_data_mat_path}...")
-    videos, gt_pos, gt_H, gt_C, f_handle = load_test_data(test_data_mat_path)
-    N = videos.shape[0]
-    print(f"  {N} videos, shape per video: {videos.shape[1:]}")
-
     if video_idx is None:
-        if auto_match_video_idx and N > 1:
-            stem = os.path.splitext(os.path.basename(result_mat_path))[0]
-            if stem.startswith('result_'):
-                stem = stem[len('result_'):]
-            tiff_candidate = os.path.join(
-                os.path.dirname(test_data_mat_path), 'tiff_output', stem + '.tif'
+        if auto_match_video_idx:
+            print(
+                "video_idx not provided; using clip 0 by default for split MAT results."
             )
-            if os.path.exists(tiff_candidate):
-                tiff_video = load_tiff_data(tiff_candidate)[0]
-                video_idx, match_mae = _find_best_matching_video_index(tiff_video, videos)
-                print(
-                    f"  Auto-matched result to MAT video index {video_idx} "
-                    f"using {tiff_candidate} (normalized MAE={match_mae:.4f})."
-                )
-            else:
-                stem2 = os.path.splitext(os.path.basename(result_mat_path))[0]
-                m = re.search(r'_(\d+)$', stem2)
-                video_idx = int(m.group(1)) if m else 0
-        else:
-            stem = os.path.splitext(os.path.basename(result_mat_path))[0]
-            m = re.search(r'_(\d+)$', stem)
-            video_idx = int(m.group(1)) if m else 0
+        video_idx = 0
 
-    if video_idx < 0 or video_idx >= N:
-        f_handle.close()
-        raise IndexError(f"video_idx={video_idx} out of range [0, {N-1}] for {test_data_mat_path}.")
-
-    print(f"Loading split inference result from {result_mat_path}...")
-    obj_est, xy_est, est_H, est_C = load_inference_results(result_mat_path)
-    if obj_est.shape[0] != 1:
-        f_handle.close()
-        raise ValueError(
-            f"Expected split result with N=1, got shape {obj_est.shape}. "
-            "Use show_video(...) for multi-video result files."
-        )
-
-    num_queries = obj_est.shape[2]
-    h_row = np.asarray(est_H[0], dtype=float).ravel()
-    c_row = np.asarray(est_C[0], dtype=float).ravel()
-    print(f"  Using MAT video index {video_idx} with split result index 0.")
-    print(
-        "  parameter ranges: "
-        f"H[{np.nanmin(h_row):.4f}, {np.nanmax(h_row):.4f}]  "
-        f"D[{np.nanmin(c_row):.4f}, {np.nanmax(c_row):.4f}]"
-    )
-
-    ani = build_animation(
-        video_frames=videos[video_idx],
-        gt_pos_list=gt_pos[video_idx] if video_idx < len(gt_pos) else [],
-        gt_h_list=gt_H[video_idx]     if video_idx < len(gt_H) else [],
-        gt_c_list=gt_C[video_idx]     if video_idx < len(gt_C) else [],
-        obj_est=obj_est[0],
-        xy_est=xy_est[0],
-        est_H=est_H[0],
-        est_C=est_C[0],
+    return show_video(
+        test_data_path=test_data_mat_path,
+        results_path=result_mat_path,
+        video_idx=video_idx,
         threshold=threshold,
         min_track_len=min_track_len,
-        num_queries=num_queries,
         interval=interval,
     )
-    f_handle.close()
-    return ani
+
+
+def find_mat_result_pairs(
+    test_mat_pattern='TestData/testdata_*.mat',
+    result_pattern='Trained_models/full_run/inference_results/result_testdata_*.mat',
+):
+    """
+    Match source MAT files with split result MAT files by basename.
+    Example: testdata_000.mat <-> result_testdata_000.mat
+    """
+    test_files = sorted(glob.glob(test_mat_pattern))
+    result_files = sorted(glob.glob(result_pattern))
+
+    result_by_stem = {}
+    for rp in result_files:
+        stem = os.path.splitext(os.path.basename(rp))[0]
+        if stem.startswith('result_'):
+            stem = stem[len('result_'):]
+        result_by_stem[stem] = rp
+
+    pairs = []
+    for tp in test_files:
+        t_stem = os.path.splitext(os.path.basename(tp))[0]
+        if t_stem in result_by_stem:
+            pairs.append((tp, result_by_stem[t_stem]))
+    return pairs
+
+
+def show_mat_result_by_index(
+    pair_index=0,
+    test_mat_pattern='TestData/testdata_*.mat',
+    result_pattern='Trained_models/full_run/inference_results/result_testdata_*.mat',
+    mat_clip_index=0,
+    threshold=0.90,
+    min_track_len=5,
+    interval=200,
+):
+    """
+    Convenience wrapper for MAT-only split inference results.
+    Uses one source MAT file and its matched `result_*.mat`.
+    """
+    pairs = find_mat_result_pairs(
+        test_mat_pattern=test_mat_pattern,
+        result_pattern=result_pattern,
+    )
+    if not pairs:
+        raise FileNotFoundError(
+            f"No matched MAT/result pairs found for '{test_mat_pattern}' and '{result_pattern}'."
+        )
+    if pair_index < 0 or pair_index >= len(pairs):
+        raise IndexError(f"pair_index={pair_index} out of range [0, {len(pairs)-1}].")
+
+    mat_path, result_path = pairs[pair_index]
+    print(f"Using MAT/result pair {pair_index + 1}/{len(pairs)}:")
+    print(f"  MAT:    {mat_path}")
+    print(f"  Result: {result_path}")
+    print(f"  MAT clip index: {mat_clip_index}")
+
+    return show_video(
+        test_data_path=mat_path,
+        results_path=result_path,
+        video_idx=mat_clip_index,
+        threshold=threshold,
+        min_track_len=min_track_len,
+        interval=interval,
+    )

@@ -53,10 +53,6 @@ python -c "import torch; print('torch.cuda.is_available=', torch.cuda.is_availab
 
 log "Starting Parallel SPTnet inference on CSD3 Ampere node..."
 
-~/envs/SPTnet/bin/python -u SPTnet_inference_parallel_cli.py \
-    -m ./Trained_models/full_run/trained_model \
-    -d "./TestData/testdata_*.mat" \
-    -b 8 \
-    --mat-clip-index 0
+~/envs/SPTnet/bin/python -u SPTnet_inference_parallel_cli.py -m ./Trained_models/full_run/trained_model -d "./TestData/testdata_*.mat" -b 8 --mat-clip-index 0
 
 log "Inference job completed."
