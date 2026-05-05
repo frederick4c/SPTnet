@@ -95,6 +95,16 @@ psfobj.Pixelsize = psfParams.Pixelsize;
 psfobj.PSFsize = psfParams.PSFsize;
 psfobj.nMed = psfParams.nMed;
 
+% These depend only on imaging/Zernike parameters, not on particle position.
+% Keeping them outside the particle loop avoids thousands of repeated
+% Zernike/grid setup calls for dense videos.
+psfobj.precomputeParam();
+psfobj.genPupil();
+norm_parameter = sum(sum(psfobj.Pupil.mag));
+otfKernel = make_otf_rescale_kernel( ...
+    simParams.Image_dims, psfParams.Pixelsize, ...
+    psfParams.OTFscale_SigmaX, psfParams.OTFscale_SigmaY);
+
 for fileOffset = 0:(simParams.Num_file - 1)
     fileindex = fileStart + fileOffset;
     fprintf('Generating file %d (%d of %d)...\n', fileindex, fileOffset + 1, simParams.Num_file);
@@ -160,12 +170,8 @@ for fileOffset = 0:(simParams.Num_file - 1)
                 traceposition{datasetIndex, particleIndex} = single([ ...
                     mean(reshape(psfobj.Xpos, [oversampling, simParams.Frames]))', ...
                     mean(reshape(psfobj.Ypos, [oversampling, simParams.Frames]))']);
-                psfobj.precomputeParam();
-                psfobj.genPupil();
                 psfobj.genPSF();
-                norm_parameter = sum(sum(psfobj.Pupil.mag));
-                psfobj.scalePSF('normal');
-                psf = psfobj.ScaledPSFs;
+                psf = apply_otf_rescale(psfobj.PSFs, otfKernel);
                 psf_blur = psf ./ norm_parameter .* (photons / oversampling);
                 psf_blur(isnan(psf_blur)) = 0;
                 psf_all(:,:,:) = psf_all(:,:,:) + psf_blur(:,:,:);
@@ -186,12 +192,8 @@ for fileOffset = 0:(simParams.Num_file - 1)
 
                 traceposition{datasetIndex, particleIndex} = single([psfobj.Xpos, psfobj.Ypos]);
 
-                psfobj.precomputeParam();
-                psfobj.genPupil();
                 psfobj.genPSF();
-                psfobj.scalePSF('normal');
-                norm_parameter = sum(sum(psfobj.Pupil.mag));
-                psf = psfobj.ScaledPSFs;
+                psf = apply_otf_rescale(psfobj.PSFs, otfKernel);
                 psf = psf ./ norm_parameter .* photons;
                 psf(isnan(psf)) = 0;
                 psf_all(:,:,:) = psf_all(:,:,:) + psf(:,:,:);
@@ -246,6 +248,38 @@ end
 
 function value = rand_range(minValue, maxValue)
     value = minValue + (maxValue - minValue) * rand();
+end
+
+function kernel = make_otf_rescale_kernel(R, pixelsize, sigmaX, sigmaY)
+    cropsize = min(29, R);
+    sigmaXr = 1 / (2 * pi * sigmaX);
+    sigmaYr = 1 / (2 * pi * sigmaY);
+    [X, Y] = meshgrid(-R / 2:R / 2 - 1, -R / 2:R / 2 - 1);
+    xx = X .* pixelsize;
+    yy = Y .* pixelsize;
+    tmp = 2 * pi * sigmaX * sigmaY .* ...
+        exp(-xx.^2 ./ (2 * sigmaXr^2)) .* ...
+        exp(-yy.^2 ./ (2 * sigmaYr^2));
+    realsize0 = floor(cropsize / 2);
+    realsize1 = ceil(cropsize / 2);
+    starty = floor(-realsize0 + R / 2 + 1);
+    endy = floor(realsize1 + R / 2);
+    startx = floor(-realsize0 + R / 2 + 1);
+    endx = floor(realsize1 + R / 2);
+    kernel = tmp(starty:endy, startx:endx) .* pixelsize^2;
+end
+
+function modpsfs = apply_otf_rescale(psfs, kernel)
+    sz = size(psfs);
+    if numel(sz) == 2
+        modpsfs = conv2(psfs, kernel, 'same');
+        return;
+    end
+
+    modpsfs = zeros(sz);
+    for ii = 1:sz(3)
+        modpsfs(:,:,ii) = conv2(psfs(:,:,ii), kernel, 'same');
+    end
 end
 
 function noisy = poisson_noise(lambda)
