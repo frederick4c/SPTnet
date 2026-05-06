@@ -36,6 +36,7 @@ def parse_args():
     p.add_argument('--val-every', type=int, default=1, help="run validation every N epochs")
     p.add_argument('--patience', type=int, default=6, help="early-stopping patience measured in validation checks")
     p.add_argument('--max-epochs', type=int, default=0, help="maximum epochs to run; 0 means no explicit cap")
+    p.add_argument('--grad-clip', type=float, default=1.0, help="max gradient norm; <=0 disables clipping")
     p.add_argument('-d', '--data', type=str, nargs='+', help="Path to training data .mat files")
     return p.parse_args()
 
@@ -131,8 +132,10 @@ def main():
 
     def hungarian_matched_loss(pred_classes, pred_positions, pred_H, pred_C, gt_classes, gt_positions, gt_H, gt_C):
         num_batches, num_queries, num_frames = pred_classes.shape
-        # Clamp sigmoid outputs to valid BCE range — can be outside range due to floating point errors
-        pred_classes = pred_classes.clamp(1e-6, 1 - 1e-6)
+        # BCE on CUDA asserts if any input drifts outside [0, 1]. Dense runs
+        # make this more likely, so sanitize every class-probability tensor.
+        pred_classes = torch.nan_to_num(pred_classes, nan=0.5, posinf=1.0, neginf=0.0).clamp(1e-6, 1 - 1e-6)
+        gt_classes = torch.nan_to_num(gt_classes, nan=0.0, posinf=1.0, neginf=0.0).clamp(0, 1)
         loss_pb = 0
         total_class_pb = 0
         total_coordi_pb = 0
@@ -145,7 +148,7 @@ def main():
                 f"❌ Number of queries ({pred_H.shape[1]}) must be greater than number of particles ({gt_H.shape[1]}). "
                 "Please increase `spt.num_queries` to be > max number of ground truth particles."
             )
-        zeros_pd = torch.zeros(spt.batch_size, spt.num_queries-gt_H.shape[1]).cuda()
+        zeros_pd = torch.zeros(num_batches, spt.num_queries-gt_H.shape[1], device=gt_H.device, dtype=gt_H.dtype)
         gt_H = torch.cat((gt_H, zeros_pd), dim=1)
         gt_C = torch.cat((gt_C, zeros_pd), dim=1)
         for b in range(num_batches):
@@ -193,14 +196,17 @@ def main():
 
                 # Not matched trajectory loss
                 non_obj_pre = pred_classes[b,:,:][np.setdiff1d(fullindex, col_indices),:]
-                non_obj_loss = F.binary_cross_entropy(non_obj_pre, torch.zeros(non_obj_pre.shape).cuda(),reduction='mean')
+                non_obj_pre = torch.nan_to_num(non_obj_pre, nan=0.5, posinf=1.0, neginf=0.0).clamp(1e-6, 1 - 1e-6)
+                non_obj_loss = F.binary_cross_entropy(non_obj_pre, torch.zeros_like(non_obj_pre),reduction='mean')
                 loss_pv = (cost_matrix_all_pf/num_tracks) + non_obj_loss
                 loss_pb += loss_pv
                 if torch.isnan(loss_pv):
                     print('Tracks', num_tracks)
                     continue
             else:
-                non_obj_loss = F.binary_cross_entropy(gt_classes[b,:,:], torch.zeros(gt_classes[b,:,:].shape).cuda(),reduction='mean')
+                non_obj_pre = pred_classes[b,:,:]
+                non_obj_pre = torch.nan_to_num(non_obj_pre, nan=0.5, posinf=1.0, neginf=0.0).clamp(1e-6, 1 - 1e-6)
+                non_obj_loss = F.binary_cross_entropy(non_obj_pre, torch.zeros_like(non_obj_pre),reduction='mean')
                 loss_pb += non_obj_loss
                 total_class = 0
                 total_coordi = 0
@@ -236,7 +242,15 @@ def main():
         H_out = H_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
         C_out = C_out.float().squeeze(-1)  # (B, Q, 1) -> (B, Q)
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = hungarian_matched_loss(class_out, center_out, H_out, C_out, class_label, position_label, Hlabel, Clabel)
+        if not torch.isfinite(t_loss):
+            raise RuntimeError(
+                f"Non-finite training loss at batch {batch_idx}: "
+                f"loss={t_loss}, class={cl_ls}, coord={coor_ls}, H={h_ls}, D={diff_ls}, bg={bg_ls}"
+            )
         scaler.scale(t_loss).backward()
+        if args.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         scaler.step(optimizer)
         scaler.update()
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(t_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
