@@ -18,11 +18,20 @@ module load rhel8/global matlab/r2024a
 cd "$SLURM_SUBMIT_DIR"
 export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 
+echo "Submit directory: $SLURM_SUBMIT_DIR"
+echo "Working directory: $(pwd)"
+
+if [[ ! -f "SPTnet_trainingdata_generator_csd3.m" ]]; then
+    echo "ERROR: SPTnet_trainingdata_generator_csd3.m was not found in $(pwd)"
+    echo "Submit the job from the SPTnet repo root, or copy SPTnet_trainingdata_generator_csd3.m to CSD3."
+    exit 1
+fi
+
 # Override these at submit time if needed, e.g.:
 #   sbatch --export=ALL,SPT_NUM_FILES=50,SPT_VIDEOS_PER_FILE=100 generate_trainingdata_csd3.slurm
 export SPT_NUM_FILES="${SPT_NUM_FILES:-10}"
 export SPT_VIDEOS_PER_FILE="${SPT_VIDEOS_PER_FILE:-100}"
-export SPT_OUTPUT_DIR="${SPT_OUTPUT_DIR:-$SLURM_SUBMIT_DIR/TestData/training_data}"
+export SPT_OUTPUT_DIR="${SPT_OUTPUT_DIR:-$SLURM_SUBMIT_DIR/DenseTrain}"
 
 # If submitted as an array, each task writes a separate contiguous block.
 # Example: --array=1-100 with SPT_NUM_FILES=10 writes files 1-1000.
@@ -37,6 +46,6 @@ echo "Output dir: $SPT_OUTPUT_DIR"
 echo "Files: $SPT_NUM_FILES, videos/file: $SPT_VIDEOS_PER_FILE"
 echo "File start: ${SPT_FILE_START:-1}"
 
-matlab -nodisplay -nojvm -r "try, SPTnet_trainingdata_generator_csd3; catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);"
+matlab -nodisplay -nojvm -r "try, addpath(pwd); which SPTnet_trainingdata_generator_csd3; SPTnet_trainingdata_generator_csd3(); catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);"
 
 echo "Generation job completed."

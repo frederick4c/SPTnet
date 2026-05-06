@@ -31,8 +31,11 @@ def parse_args():
     p.add_argument('-g', '--gpus',        type=int,   default=1,      help="number of GPUs to use")
     p.add_argument('-lr','--learning-rate',type=float, default=0.0001, help="initial learning rate")
     p.add_argument('-m','--model-dir',    type=str,   default='.',    help="where to save/load model")
-    p.add_argument('-q', '--query', type=str, default=20, help="number of query")
-    p.add_argument('-dc', '--max_dc', type=str, default=0.5, help="the maximum diffusion coefficient among all training data")
+    p.add_argument('-q', '--query', type=int, default=20, help="number of query")
+    p.add_argument('-dc', '--max_dc', type=float, default=0.5, help="the maximum diffusion coefficient among all training data")
+    p.add_argument('--val-every', type=int, default=1, help="run validation every N epochs")
+    p.add_argument('--patience', type=int, default=6, help="early-stopping patience measured in validation checks")
+    p.add_argument('--max-epochs', type=int, default=0, help="maximum epochs to run; 0 means no explicit cap")
     p.add_argument('-d', '--data', type=str, nargs='+', help="Path to training data .mat files")
     return p.parse_args()
 
@@ -305,7 +308,7 @@ def main():
 
     no_improvement = 0
     min_v_loss = 99999999999
-    max_num_of_epoch_without_improving = 6
+    max_num_of_epoch_without_improving = args.patience
     epoch = 1
     #
     start = time.time()
@@ -317,7 +320,7 @@ def main():
     if not os.path.exists(csv_log_path):
         with open(csv_log_path, 'w') as csv_f:
             csv_f.write('epoch,t_loss,v_loss,t_cls,v_cls,t_coor,v_coor,t_hurst,v_hurst,t_diff,v_diff,t_bg,v_bg\n')
-    while no_improvement < max_num_of_epoch_without_improving:
+    while no_improvement < max_num_of_epoch_without_improving and (args.max_epochs <= 0 or epoch <= args.max_epochs):
     # for epoch in range(n_epochs):
         print(f"Starting Epoch {epoch}...")
         epoch_list.append(epoch)
@@ -351,23 +354,33 @@ def main():
         t_loss_epoch_bg = t_loss_total_bg / (batch_idx + 1)
             # lr.append(scheduler_rdpl.get_lr()[0])
 
-        for batch_idx, data in enumerate(spt.val_dataloader):
-            v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = val_step(batch_idx, data)
-            v_loss_total+=v_loss
-            v_loss_total_cls += cl_ls
-            v_loss_total_coor += coor_ls
-            v_loss_total_hurst += h_ls
-            v_loss_total_diff += diff_ls
-            v_loss_total_bg += bg_ls
-        v_loss_epoch = v_loss_total / (batch_idx + 1)
-        v_loss_epoch_cls = v_loss_total_cls / (batch_idx + 1)
-        v_loss_epoch_coor = v_loss_total_coor / (batch_idx + 1)
-        v_loss_epoch_hurst = v_loss_total_hurst / (batch_idx + 1)
-        v_loss_epoch_diff = v_loss_total_diff / (batch_idx + 1)
-        v_loss_epoch_bg = v_loss_total_bg / (batch_idx + 1)
-        print(f"Finished validation for Epoch {epoch}. Loss: {v_loss_epoch:.4f}")
+        did_validate = (epoch == 1) or (args.val_every > 0 and epoch % args.val_every == 0)
+        if did_validate:
+            for batch_idx, data in enumerate(spt.val_dataloader):
+                v_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = val_step(batch_idx, data)
+                v_loss_total+=v_loss
+                v_loss_total_cls += cl_ls
+                v_loss_total_coor += coor_ls
+                v_loss_total_hurst += h_ls
+                v_loss_total_diff += diff_ls
+                v_loss_total_bg += bg_ls
+            v_loss_epoch = v_loss_total / (batch_idx + 1)
+            v_loss_epoch_cls = v_loss_total_cls / (batch_idx + 1)
+            v_loss_epoch_coor = v_loss_total_coor / (batch_idx + 1)
+            v_loss_epoch_hurst = v_loss_total_hurst / (batch_idx + 1)
+            v_loss_epoch_diff = v_loss_total_diff / (batch_idx + 1)
+            v_loss_epoch_bg = v_loss_total_bg / (batch_idx + 1)
+            print(f"Finished validation for Epoch {epoch}. Loss: {v_loss_epoch:.4f}")
+        else:
+            v_loss_epoch = float('nan')
+            v_loss_epoch_cls = float('nan')
+            v_loss_epoch_coor = float('nan')
+            v_loss_epoch_hurst = float('nan')
+            v_loss_epoch_diff = float('nan')
+            v_loss_epoch_bg = float('nan')
+            print(f"Skipping validation for Epoch {epoch}; next validation check is controlled by --val-every {args.val_every}.")
 
-        if v_loss_epoch < min_v_loss:
+        if did_validate and v_loss_epoch < min_v_loss:
             min_v_loss = v_loss_epoch
             no_improvement = 0
             if args.gpus > 1:
@@ -376,8 +389,10 @@ def main():
                 torch.save(model.state_dict(), spt.path_saved_model)
             torch.save(optimizer.state_dict(), spt.path_saved_model+'optimizer_stat')
             print('==> Saving a new best model')
-        else:
+        elif did_validate:
             no_improvement+=1
+        else:
+            print(f"Early stopping patience unchanged ({no_improvement}/{max_num_of_epoch_without_improving}) because validation was skipped.")
         lr.append(optimizer.param_groups[0]['lr'])
         # scheduler_rdpl.step(v_loss_epoch)
         print('learning rate is: %f' %lr[-1])
@@ -412,7 +427,7 @@ def main():
                         f'{t_loss_epoch_diff},{v_loss_epoch_diff},{t_loss_epoch_bg},{v_loss_epoch_bg}\n')
 
         # ---- Save learning curve plot every 5 epochs or when a new best model is saved ----
-        if epoch % 5 == 0 or no_improvement == 0:
+        if epoch % 5 == 0 or (did_validate and no_improvement == 0):
             fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(15, 8))
             ax[0,0].plot(epoch_list, t_loss_append, 'r', lw=2, label='train')
             ax[0,0].plot(epoch_list, v_loss_append, 'b', lw=2, label='val')
