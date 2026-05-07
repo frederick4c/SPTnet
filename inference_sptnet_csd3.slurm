@@ -51,8 +51,21 @@ which python
 python -c "import sys; print(sys.path)"
 python -c "import torch; print('torch.cuda.is_available=', torch.cuda.is_available())"
 
-log "Starting Parallel SPTnet inference on CSD3 Ampere node..."
+export SPT_MODEL_PATH="${SPT_MODEL_PATH:-./Trained_models/full_run/trained_model}"
+export SPT_INFER_DATA="${SPT_INFER_DATA:-./TestData/testdata_*.mat}"
+export SPT_INFER_BATCH_SIZE="${SPT_INFER_BATCH_SIZE:-8}"
+export SPT_MAT_CLIP_INDEX="${SPT_MAT_CLIP_INDEX:-0}"
 
-~/envs/SPTnet/bin/python -u SPTnet_inference_parallel_cli.py -m ./Trained_models/full_run/trained_model -d "./TestData/testdata_*.mat" -b 8 --mat-clip-index 0
+log "Starting Parallel SPTnet inference on CSD3 Ampere node..."
+log "Model path: $SPT_MODEL_PATH"
+log "Inference data pattern: $SPT_INFER_DATA"
+log "Batch size: $SPT_INFER_BATCH_SIZE"
+log "MAT clip index: $SPT_MAT_CLIP_INDEX"
+
+~/envs/SPTnet/bin/python -u SPTnet_inference_parallel_cli.py \
+    -m "$SPT_MODEL_PATH" \
+    -d "$SPT_INFER_DATA" \
+    -b "$SPT_INFER_BATCH_SIZE" \
+    --mat-clip-index "$SPT_MAT_CLIP_INDEX"
 
 log "Inference job completed."

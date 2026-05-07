@@ -16,3 +16,4 @@ __pycache__
 /Trained_models/inference_results/
 Trained_models/full_run/
 Trained_models/pretrained/inference_results
+Trained_models/dense_test
