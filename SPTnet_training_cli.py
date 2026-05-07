@@ -137,6 +137,9 @@ def main():
         # BCE on CUDA asserts if any input drifts outside [0, 1]. Dense runs
         # make this more likely, so sanitize every class-probability tensor.
         pred_classes = torch.nan_to_num(pred_classes, nan=0.5, posinf=1.0, neginf=0.0).clamp(1e-6, 1 - 1e-6)
+        pred_positions = torch.nan_to_num(pred_positions, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1.0, 1.0)
+        pred_H = torch.nan_to_num(pred_H, nan=0.5, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+        pred_C = torch.nan_to_num(pred_C, nan=0.5, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
         gt_classes = torch.nan_to_num(gt_classes, nan=0.0, posinf=1.0, neginf=0.0).clamp(0, 1)
         loss_pb = 0
         total_class_pb = 0
@@ -179,22 +182,28 @@ def main():
                 stepidx = duration.cpu().numpy().astype(int)-1
                 CRLBweight_H = CRLB_matrix[0, 0, C_idx, H_idx, stepidx] / (CRLB_matrix[0, 0, C_idx, H_idx, spt.number_of_frame-1] + 1e-8)
                 CRLBweight_C = CRLB_matrix[1, 1, C_idx, H_idx, stepidx] / (CRLB_matrix[1, 1, C_idx, H_idx, spt.number_of_frame-1] + 1e-8)
-                H_loss_matrix = criterion_mae(pred_H[b].view(-1,1).repeat(1, gt_H_nonzero.shape[-1]),gt_H_nonzero.view(1,-1).repeat(pred_H.shape[-1],1)) / torch.tensor(CRLBweight_H).repeat(pred_H.shape[-1],1).cuda().clamp(min=1e-4)
-                C_loss_matrix = criterion_mae(pred_C[b].view(-1, 1).repeat(1, gt_C_nonzero.shape[-1]),gt_C_nonzero.view(1, -1).repeat(pred_C.shape[-1], 1)) / torch.tensor(CRLBweight_C).repeat(pred_H.shape[-1],1).cuda().clamp(min=1e-4)
+                CRLBweight_H = torch.as_tensor(CRLBweight_H, device=pred_H.device, dtype=pred_H.dtype)
+                CRLBweight_C = torch.as_tensor(CRLBweight_C, device=pred_C.device, dtype=pred_C.dtype)
+                CRLBweight_H = torch.nan_to_num(CRLBweight_H, nan=1.0, posinf=1.0, neginf=1.0).clamp(min=1e-4)
+                CRLBweight_C = torch.nan_to_num(CRLBweight_C, nan=1.0, posinf=1.0, neginf=1.0).clamp(min=1e-4)
+                H_loss_matrix = criterion_mae(pred_H[b].view(-1,1).repeat(1, gt_H_nonzero.shape[-1]),gt_H_nonzero.view(1,-1).repeat(pred_H.shape[-1],1)) / CRLBweight_H.repeat(pred_H.shape[-1],1)
+                C_loss_matrix = criterion_mae(pred_C[b].view(-1, 1).repeat(1, gt_C_nonzero.shape[-1]),gt_C_nonzero.view(1, -1).repeat(pred_C.shape[-1], 1)) / CRLBweight_C.repeat(pred_H.shape[-1],1)
                 cost_matrix_all_pf = (cost_matrix_class_pf + 2*pos_loss_matrix_allfrm_pf + 0.5*H_loss_matrix + 0.5*C_loss_matrix).t()
                 
-                # Safety clamp for SciPy linear_sum_assignment: Replace NaN/Inf with safe max values
-                cost_matrix_safe = torch.nan_to_num(cost_matrix_all_pf, nan=1e4, posinf=1e4, neginf=-1e4)
+                # Use the same finite cost matrix for assignment and selected loss.
+                # Previously only the assignment was sanitized; the selected
+                # unsanitized loss could still become NaN late in dense epochs.
+                cost_matrix_safe = torch.nan_to_num(cost_matrix_all_pf, nan=1e4, posinf=1e4, neginf=1e4)
 
                 # Compute the optimal assignment
                 row_indices, col_indices = linear_sum_assignment(cost_matrix_safe.cpu().detach().numpy())
                 # Calculate the losses for the assigned pairs
-                cost_matrix_all_pf = cost_matrix_all_pf[row_indices, col_indices].sum()
+                cost_matrix_all_pf = cost_matrix_safe[row_indices, col_indices].sum()
 
-                total_class = (cost_matrix_class_pf.t().cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
-                total_coordi = (2*pos_loss_matrix_allfrm_pf.t().cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
-                total_hurst = (0.5*H_loss_matrix.t().cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
-                total_diffusion = (0.5*C_loss_matrix.t().cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
+                total_class = (torch.nan_to_num(cost_matrix_class_pf.t(), nan=0.0, posinf=1e4, neginf=0.0).cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
+                total_coordi = (2*torch.nan_to_num(pos_loss_matrix_allfrm_pf.t(), nan=0.0, posinf=1e4, neginf=0.0).cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
+                total_hurst = (0.5*torch.nan_to_num(H_loss_matrix.t(), nan=0.0, posinf=1e4, neginf=0.0).cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
+                total_diffusion = (0.5*torch.nan_to_num(C_loss_matrix.t(), nan=0.0, posinf=1e4, neginf=0.0).cpu().detach().numpy()[row_indices,col_indices].sum()) / num_tracks
 
                 # Not matched trajectory loss
                 non_obj_pre = pred_classes[b,:,:][np.setdiff1d(fullindex, col_indices),:]
@@ -252,7 +261,16 @@ def main():
         scaler.scale(t_loss).backward()
         if args.grad_clip > 0:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                args.grad_clip,
+                error_if_nonfinite=False,
+            )
+            if not torch.isfinite(grad_norm):
+                print(f"Skipping batch {batch_idx}: non-finite gradient norm {grad_norm}.")
+                optimizer.zero_grad(set_to_none=True)
+                scaler.update()
+                return float(t_loss.detach().cpu()), 0.0, 0.0, 0.0, 0.0, 0.0
         scaler.step(optimizer)
         scaler.update()
         t_loss, cl_ls, coor_ls, h_ls, diff_ls, bg_ls = float(t_loss), float(cl_ls), float(coor_ls), float(h_ls), float(diff_ls), float(bg_ls)
