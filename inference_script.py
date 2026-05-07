@@ -84,6 +84,59 @@ _parula_data = [
 parula_cmap = LinearSegmentedColormap.from_list('parula', _parula_data, N=256)
 
 
+# ─── Directory defaults ──────────────────────────────────────────────────────
+# These can be overridden in a notebook with:
+#     set_inference_dirs(test_data_dir='TestData/dense_test',
+#                        results_dir='Trained_models/.../inference_results')
+TEST_DATA_DIR = os.environ.get('SPT_TEST_DATA_DIR', 'TestData')
+RESULTS_DIR = os.environ.get(
+    'SPT_RESULTS_DIR',
+    'Trained_models/full_run/inference_results',
+)
+
+
+def set_inference_dirs(test_data_dir=None, results_dir=None):
+    """
+    Set default directories used by the result-pair helpers.
+
+    This is useful in notebooks, where you can configure once:
+
+        set_inference_dirs(
+            test_data_dir='TestData/dense_test',
+            results_dir='Trained_models/dense_test/inference_results',
+        )
+
+    and then call `show_mat_result_by_index(...)` without repeatedly passing
+    glob patterns.
+    """
+    global TEST_DATA_DIR, RESULTS_DIR
+    if test_data_dir is not None:
+        TEST_DATA_DIR = test_data_dir
+    if results_dir is not None:
+        RESULTS_DIR = results_dir
+    print(f"Test data directory: {TEST_DATA_DIR}")
+    print(f"Results directory:   {RESULTS_DIR}")
+
+
+def get_inference_dirs():
+    """Return the currently configured default test/result directories."""
+    return TEST_DATA_DIR, RESULTS_DIR
+
+
+def _pattern_from_dir_or_pattern(path_or_pattern, default_pattern):
+    """
+    Accept either a directory or a glob/file pattern.
+    """
+    if path_or_pattern is None:
+        return default_pattern
+    if glob.has_magic(path_or_pattern):
+        return path_or_pattern
+    _, ext = os.path.splitext(os.path.basename(path_or_pattern.rstrip(os.sep)))
+    if os.path.isdir(path_or_pattern) or ext == '':
+        return os.path.join(path_or_pattern, default_pattern)
+    return path_or_pattern
+
+
 # ─── Data loading ─────────────────────────────────────────────────────────────
 def _coerce_video_array(td_array):
     """
@@ -773,13 +826,27 @@ def show_video(test_data_path, results_path,
 
 
 def find_tiff_result_pairs(
-    tiff_pattern='TestData/tiff_output/*.tif',
-    result_pattern='Trained_models/full_run/inference_results/result_*.mat',
+    tiff_pattern=None,
+    result_pattern=None,
+    test_data_dir=None,
+    results_dir=None,
 ):
     """
     Match TIFF stacks with per-file `result_*.mat` outputs by basename.
     Returns a sorted list of (tiff_path, result_path).
     """
+    if tiff_pattern is None:
+        base_test_dir = TEST_DATA_DIR if test_data_dir is None else test_data_dir
+        tiff_pattern = os.path.join(base_test_dir, '*.tif')
+    else:
+        tiff_pattern = _pattern_from_dir_or_pattern(tiff_pattern, '*.tif')
+
+    if result_pattern is None:
+        base_results_dir = RESULTS_DIR if results_dir is None else results_dir
+        result_pattern = os.path.join(base_results_dir, 'result_*.mat')
+    else:
+        result_pattern = _pattern_from_dir_or_pattern(result_pattern, 'result_*.mat')
+
     tiff_files = sorted(glob.glob(tiff_pattern))
     result_files = sorted(glob.glob(result_pattern))
 
@@ -800,8 +867,10 @@ def find_tiff_result_pairs(
 
 def show_tiff_result_by_index(
     pair_index=0,
-    tiff_pattern='TestData/tiff_output/*.tif',
-    result_pattern='Trained_models/full_run/inference_results/result_*.mat',
+    tiff_pattern=None,
+    result_pattern=None,
+    test_data_dir=None,
+    results_dir=None,
     gt_data_path=None,
     gt_video_idx=None,
     auto_match_gt_video=True,
@@ -812,7 +881,12 @@ def show_tiff_result_by_index(
     """
     Convenience wrapper for per-file TIFF + result MAT workflows.
     """
-    pairs = find_tiff_result_pairs(tiff_pattern=tiff_pattern, result_pattern=result_pattern)
+    pairs = find_tiff_result_pairs(
+        tiff_pattern=tiff_pattern,
+        result_pattern=result_pattern,
+        test_data_dir=test_data_dir,
+        results_dir=results_dir,
+    )
     if not pairs:
         raise FileNotFoundError(
             f"No matched pairs found for TIFF pattern '{tiff_pattern}' and result pattern '{result_pattern}'."
@@ -869,13 +943,27 @@ def show_mat_with_single_result(
 
 
 def find_mat_result_pairs(
-    test_mat_pattern='TestData/testdata_*.mat',
-    result_pattern='Trained_models/full_run/inference_results/result_testdata_*.mat',
+    test_mat_pattern=None,
+    result_pattern=None,
+    test_data_dir=None,
+    results_dir=None,
 ):
     """
     Match source MAT files with split result MAT files by basename.
     Example: testdata_000.mat <-> result_testdata_000.mat
     """
+    if test_mat_pattern is None:
+        base_test_dir = TEST_DATA_DIR if test_data_dir is None else test_data_dir
+        test_mat_pattern = os.path.join(base_test_dir, '*.mat')
+    else:
+        test_mat_pattern = _pattern_from_dir_or_pattern(test_mat_pattern, '*.mat')
+
+    if result_pattern is None:
+        base_results_dir = RESULTS_DIR if results_dir is None else results_dir
+        result_pattern = os.path.join(base_results_dir, 'result_*.mat')
+    else:
+        result_pattern = _pattern_from_dir_or_pattern(result_pattern, 'result_*.mat')
+
     test_files = sorted(glob.glob(test_mat_pattern))
     result_files = sorted(glob.glob(result_pattern))
 
@@ -896,8 +984,10 @@ def find_mat_result_pairs(
 
 def show_mat_result_by_index(
     pair_index=0,
-    test_mat_pattern='TestData/testdata_*.mat',
-    result_pattern='Trained_models/full_run/inference_results/result_testdata_*.mat',
+    test_mat_pattern=None,
+    result_pattern=None,
+    test_data_dir=None,
+    results_dir=None,
     mat_clip_index=0,
     threshold=0.90,
     min_track_len=5,
@@ -910,6 +1000,8 @@ def show_mat_result_by_index(
     pairs = find_mat_result_pairs(
         test_mat_pattern=test_mat_pattern,
         result_pattern=result_pattern,
+        test_data_dir=test_data_dir,
+        results_dir=results_dir,
     )
     if not pairs:
         raise FileNotFoundError(

@@ -48,6 +48,8 @@ export SPT_PATIENCE="${SPT_PATIENCE:-6}"
 export SPT_MAX_EPOCHS="${SPT_MAX_EPOCHS:-0}"
 export SPT_MAX_DC="${SPT_MAX_DC:-0.5}"
 export SPT_GRAD_CLIP="${SPT_GRAD_CLIP:-1.0}"
+export SPT_MAX_TRAIN_BATCHES="${SPT_MAX_TRAIN_BATCHES:-0}"
+export SPT_MAX_VAL_BATCHES="${SPT_MAX_VAL_BATCHES:-0}"
 
 echo "Starting SPTnet training on CSD3 Ampere node..."
 echo "Model dir: $SPT_MODEL_DIR"
@@ -59,6 +61,8 @@ echo "Validation every: $SPT_VAL_EVERY"
 echo "Patience: $SPT_PATIENCE"
 echo "Max epochs: $SPT_MAX_EPOCHS"
 echo "Gradient clip: $SPT_GRAD_CLIP"
+echo "Max train batches: $SPT_MAX_TRAIN_BATCHES"
+echo "Max validation batches: $SPT_MAX_VAL_BATCHES"
 
 mkdir -p "$SPT_MODEL_DIR"
 
@@ -73,6 +77,8 @@ mkdir -p "$SPT_MODEL_DIR"
     --val-every "$SPT_VAL_EVERY" \
     --patience "$SPT_PATIENCE" \
     --max-epochs "$SPT_MAX_EPOCHS" \
-    --grad-clip "$SPT_GRAD_CLIP"
+    --grad-clip "$SPT_GRAD_CLIP" \
+    --max-train-batches "$SPT_MAX_TRAIN_BATCHES" \
+    --max-val-batches "$SPT_MAX_VAL_BATCHES"
 
 echo "Training job completed."

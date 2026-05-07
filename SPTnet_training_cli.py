@@ -37,6 +37,8 @@ def parse_args():
     p.add_argument('--patience', type=int, default=6, help="early-stopping patience measured in validation checks")
     p.add_argument('--max-epochs', type=int, default=0, help="maximum epochs to run; 0 means no explicit cap")
     p.add_argument('--grad-clip', type=float, default=1.0, help="max gradient norm; <=0 disables clipping")
+    p.add_argument('--max-train-batches', type=int, default=0, help="maximum train batches per epoch; 0 means all")
+    p.add_argument('--max-val-batches', type=int, default=0, help="maximum validation batches per validation pass; 0 means all")
     p.add_argument('-d', '--data', type=str, nargs='+', help="Path to training data .mat files")
     return p.parse_args()
 
@@ -360,6 +362,9 @@ def main():
             t_loss_total_diff += diff_ls
             t_loss_total_bg += bg_ls
             pbar.set_postfix({'loss': f'{t_loss:.4f}'})
+            if args.max_train_batches > 0 and (batch_idx + 1) >= args.max_train_batches:
+                print(f"Stopping train epoch early after {args.max_train_batches} batches (--max-train-batches).")
+                break
         t_loss_epoch = t_loss_total/(batch_idx+1)
         t_loss_epoch_cls  = t_loss_total_cls/(batch_idx+1)
         t_loss_epoch_coor = t_loss_total_coor/(batch_idx+1)
@@ -378,6 +383,9 @@ def main():
                 v_loss_total_hurst += h_ls
                 v_loss_total_diff += diff_ls
                 v_loss_total_bg += bg_ls
+                if args.max_val_batches > 0 and (batch_idx + 1) >= args.max_val_batches:
+                    print(f"Stopping validation early after {args.max_val_batches} batches (--max-val-batches).")
+                    break
             v_loss_epoch = v_loss_total / (batch_idx + 1)
             v_loss_epoch_cls = v_loss_total_cls / (batch_idx + 1)
             v_loss_epoch_coor = v_loss_total_coor / (batch_idx + 1)
