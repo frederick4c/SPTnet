@@ -1,6 +1,7 @@
 import os
 import argparse
 import glob
+import csv
 if 'MPLBACKEND' in os.environ:
     del os.environ['MPLBACKEND']
 import matplotlib
@@ -24,6 +25,45 @@ torch.backends.cudnn.allow_tf32 = True
 
 current_folder = os.path.dirname(os.path.abspath(__file__))
 
+
+def _load_loss_history(csv_log_path):
+    history = {
+        'epoch': [],
+        't_loss': [],
+        'v_loss': [],
+        't_cls': [],
+        'v_cls': [],
+        't_coor': [],
+        'v_coor': [],
+        't_hurst': [],
+        'v_hurst': [],
+        't_diff': [],
+        'v_diff': [],
+        't_bg': [],
+        'v_bg': [],
+    }
+    if not csv_log_path or not os.path.exists(csv_log_path):
+        return history
+
+    with open(csv_log_path, 'r', newline='') as csv_f:
+        reader = csv.DictReader(csv_f)
+        for row in reader:
+            try:
+                history['epoch'].append(int(float(row['epoch'])))
+                for key in history:
+                    if key != 'epoch':
+                        history[key].append(float(row[key]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return history
+
+
+def _copy_loss_history(src_csv, dst_csv):
+    if not src_csv or not os.path.exists(src_csv) or os.path.abspath(src_csv) == os.path.abspath(dst_csv):
+        return
+    with open(src_csv, 'r') as src, open(dst_csv, 'w') as dst:
+        dst.write(src.read())
+
 def parse_args():
     #define training parameters based user's inputs
     p = argparse.ArgumentParser(description="Training SPTnet with user defined parameters")
@@ -39,6 +79,9 @@ def parse_args():
     p.add_argument('--grad-clip', type=float, default=1.0, help="max gradient norm; <=0 disables clipping")
     p.add_argument('--max-train-batches', type=int, default=0, help="maximum train batches per epoch; 0 means all")
     p.add_argument('--max-val-batches', type=int, default=0, help="maximum validation batches per validation pass; 0 means all")
+    p.add_argument('--resume', type=str, default='', help="path to model weights to resume from")
+    p.add_argument('--resume-optimizer', type=str, default='', help="path to optimizer state; defaults to <resume>optimizer_stat")
+    p.add_argument('--resume-history', type=str, default='', help="path to existing loss_history.csv; defaults to output model dir CSV")
     p.add_argument('-d', '--data', type=str, nargs='+', help="Path to training data .mat files")
     return p.parse_args()
 
@@ -324,33 +367,66 @@ def main():
     #                                                  eps=1e-08)
     # scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=20, eta_min=1e-6)
     ##############################################
-    t_loss_append = []
-    t_loss_epoch_cls_append = []
-    t_loss_epoch_coor_append = []
-    t_loss_epoch_hurst_append = []
-    t_loss_epoch_diff_append = []
-    t_loss_epoch_bg_append = []
+    csv_log_path = spt.path_saved_model + 'loss_history.csv'
+    resume_history_path = args.resume_history or csv_log_path
+    if args.resume_history:
+        _copy_loss_history(args.resume_history, csv_log_path)
+    loss_history = _load_loss_history(resume_history_path)
 
-    v_loss_append = []
-    v_loss_epoch_cls_append = []
-    v_loss_epoch_coor_append = []
-    v_loss_epoch_hurst_append = []
-    v_loss_epoch_diff_append = []
-    v_loss_epoch_bg_append = []
+    t_loss_append = loss_history['t_loss']
+    t_loss_epoch_cls_append = loss_history['t_cls']
+    t_loss_epoch_coor_append = loss_history['t_coor']
+    t_loss_epoch_hurst_append = loss_history['t_hurst']
+    t_loss_epoch_diff_append = loss_history['t_diff']
+    t_loss_epoch_bg_append = loss_history['t_bg']
 
-    epoch_list = []
+    v_loss_append = loss_history['v_loss']
+    v_loss_epoch_cls_append = loss_history['v_cls']
+    v_loss_epoch_coor_append = loss_history['v_coor']
+    v_loss_epoch_hurst_append = loss_history['v_hurst']
+    v_loss_epoch_diff_append = loss_history['v_diff']
+    v_loss_epoch_bg_append = loss_history['v_bg']
+
+    epoch_list = loss_history['epoch']
 
     no_improvement = 0
-    min_v_loss = 99999999999
+    finite_v_losses = [v for v in v_loss_append if np.isfinite(v)]
+    min_v_loss = min(finite_v_losses) if finite_v_losses else 99999999999
     max_num_of_epoch_without_improving = args.patience
-    epoch = 1
+    epoch = (max(epoch_list) + 1) if epoch_list else 1
+
+    if args.resume:
+        if not os.path.exists(args.resume):
+            raise FileNotFoundError(f"Resume checkpoint not found: {args.resume}")
+        print(f"Resuming model weights from: {args.resume}")
+        state_dict = torch.load(args.resume, map_location=device)
+        target_model = model.module if args.gpus > 1 else model
+        incompatible = target_model.load_state_dict(state_dict, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(
+                f"Resume checkpoint loaded with missing={len(incompatible.missing_keys)}, "
+                f"unexpected={len(incompatible.unexpected_keys)}"
+            )
+
+        optimizer_path = args.resume_optimizer or (args.resume + 'optimizer_stat')
+        if optimizer_path and os.path.exists(optimizer_path):
+            print(f"Resuming optimizer state from: {optimizer_path}")
+            optimizer.load_state_dict(torch.load(optimizer_path, map_location=device))
+            for group in optimizer.param_groups:
+                group['lr'] = spt.learning_rate
+            print(f"Optimizer state loaded; learning rate set to {spt.learning_rate}.")
+        else:
+            print(f"No optimizer state found at {optimizer_path}; continuing with a fresh optimizer.")
+
+    if epoch_list:
+        print(f"Loaded {len(epoch_list)} previous loss-history rows; next epoch is {epoch}.")
+        print(f"Best previous finite validation loss: {min_v_loss}")
     #
     start = time.time()
     lr = []
 
     modelrecord = open(spt.path_saved_model + 'training_log.txt', 'a')
     # Lightweight CSV log — writing a matplotlib figure on every epoch is slow on a headless node.
-    csv_log_path = spt.path_saved_model + 'loss_history.csv'
     if not os.path.exists(csv_log_path):
         with open(csv_log_path, 'w') as csv_f:
             csv_f.write('epoch,t_loss,v_loss,t_cls,v_cls,t_coor,v_coor,t_hurst,v_hurst,t_diff,v_diff,t_bg,v_bg\n')

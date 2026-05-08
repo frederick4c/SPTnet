@@ -50,6 +50,9 @@ export SPT_MAX_DC="${SPT_MAX_DC:-0.5}"
 export SPT_GRAD_CLIP="${SPT_GRAD_CLIP:-1.0}"
 export SPT_MAX_TRAIN_BATCHES="${SPT_MAX_TRAIN_BATCHES:-0}"
 export SPT_MAX_VAL_BATCHES="${SPT_MAX_VAL_BATCHES:-0}"
+export SPT_RESUME="${SPT_RESUME:-}"
+export SPT_RESUME_OPTIMIZER="${SPT_RESUME_OPTIMIZER:-}"
+export SPT_RESUME_HISTORY="${SPT_RESUME_HISTORY:-}"
 
 echo "Starting SPTnet training on CSD3 Ampere node..."
 echo "Model dir: $SPT_MODEL_DIR"
@@ -63,8 +66,22 @@ echo "Max epochs: $SPT_MAX_EPOCHS"
 echo "Gradient clip: $SPT_GRAD_CLIP"
 echo "Max train batches: $SPT_MAX_TRAIN_BATCHES"
 echo "Max validation batches: $SPT_MAX_VAL_BATCHES"
+echo "Resume weights: ${SPT_RESUME:-<none>}"
+echo "Resume optimizer: ${SPT_RESUME_OPTIMIZER:-<auto/none>}"
+echo "Resume history: ${SPT_RESUME_HISTORY:-<output/default>}"
 
 mkdir -p "$SPT_MODEL_DIR"
+
+extra_args=()
+if [[ -n "$SPT_RESUME" ]]; then
+    extra_args+=(--resume "$SPT_RESUME")
+fi
+if [[ -n "$SPT_RESUME_OPTIMIZER" ]]; then
+    extra_args+=(--resume-optimizer "$SPT_RESUME_OPTIMIZER")
+fi
+if [[ -n "$SPT_RESUME_HISTORY" ]]; then
+    extra_args+=(--resume-history "$SPT_RESUME_HISTORY")
+fi
 
 ~/envs/SPTnet/bin/python SPTnet_training_cli.py \
     --model-dir "$SPT_MODEL_DIR" \
@@ -79,6 +96,7 @@ mkdir -p "$SPT_MODEL_DIR"
     --max-epochs "$SPT_MAX_EPOCHS" \
     --grad-clip "$SPT_GRAD_CLIP" \
     --max-train-batches "$SPT_MAX_TRAIN_BATCHES" \
-    --max-val-batches "$SPT_MAX_VAL_BATCHES"
+    --max-val-batches "$SPT_MAX_VAL_BATCHES" \
+    "${extra_args[@]}"
 
 echo "Training job completed."
