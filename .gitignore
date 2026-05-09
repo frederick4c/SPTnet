@@ -21,3 +21,5 @@ Trained_models/dense_full
 
 # data
 Testdata/dense_test
+TrainData
+DenseTrain

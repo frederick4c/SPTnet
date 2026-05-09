@@ -53,6 +53,7 @@ export SPT_MAX_VAL_BATCHES="${SPT_MAX_VAL_BATCHES:-0}"
 export SPT_RESUME="${SPT_RESUME:-}"
 export SPT_RESUME_OPTIMIZER="${SPT_RESUME_OPTIMIZER:-}"
 export SPT_RESUME_HISTORY="${SPT_RESUME_HISTORY:-}"
+export SPT_NUM_WORKERS="${SPT_NUM_WORKERS:-2}"
 
 echo "Starting SPTnet training on CSD3 Ampere node..."
 echo "Model dir: $SPT_MODEL_DIR"
@@ -69,6 +70,7 @@ echo "Max validation batches: $SPT_MAX_VAL_BATCHES"
 echo "Resume weights: ${SPT_RESUME:-<none>}"
 echo "Resume optimizer: ${SPT_RESUME_OPTIMIZER:-<auto/none>}"
 echo "Resume history: ${SPT_RESUME_HISTORY:-<output/default>}"
+echo "DataLoader workers: $SPT_NUM_WORKERS"
 
 mkdir -p "$SPT_MODEL_DIR"
 

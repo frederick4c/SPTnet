@@ -227,12 +227,16 @@ class SPTnet_toolbox(object):
         # mean_t, std_t = dataserver_train.mean(), dataserver_train.std()
         # dataserver_train = transforms.Normalize(mean_t, std_t)
         self.dataserver_train = dataserver_train
-        # On CSD3 SLURM, use the allocated CPU count; fall back to min(cpus, 4) elsewhere (e.g. Colab)
-        _nw = int(os.environ.get('SLURM_CPUS_PER_TASK', min(os.cpu_count() or 2, 4)))
+        # Dense HDF5 training can OOM if every worker inherits many open file
+        # handles. Allow explicit control and default more conservatively.
+        _default_nw = min(int(os.environ.get('SLURM_CPUS_PER_TASK', min(os.cpu_count() or 2, 2))), 2)
+        _nw = int(os.environ.get('SPT_NUM_WORKERS', _default_nw))
+        _persistent = _nw > 0
+        print(f"DataLoader workers: {_nw} (persistent_workers={_persistent})")
         self.train_dataloader = torch.utils.data.DataLoader(dataserver_train,
-                           batch_size= self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=True) #transforms.Normalize
+                           batch_size= self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=_persistent) #transforms.Normalize
         self.val_dataloader = torch.utils.data.DataLoader(val_set,
-                           batch_size=self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=True)
+                           batch_size=self.batch_size,shuffle=True, num_workers=_nw, drop_last=True, pin_memory=True, persistent_workers=_persistent)
 
     def testdata_loader(self, dataserver_test):
         self.test_data = torch.utils.data.DataLoader(dataserver_test,batch_size=1,
