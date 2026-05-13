@@ -2,6 +2,7 @@ import os
 import argparse
 import glob
 import csv
+import random
 if 'MPLBACKEND' in os.environ:
     del os.environ['MPLBACKEND']
 import matplotlib
@@ -24,6 +25,16 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 current_folder = os.path.dirname(os.path.abspath(__file__))
+RANDOM_SEED = 68
+
+
+def set_random_seeds(seed=RANDOM_SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
 
 def _load_loss_history(csv_log_path):
@@ -88,12 +99,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    set_random_seeds()
     
     model_name = "trained_model"
     if not os.path.exists(args.model_dir):
         os.makedirs(args.model_dir)
     full_path = os.path.join(args.model_dir, model_name)
     print(f"Model will be saved to: {os.path.abspath(full_path)}")
+    print(f"Random seed set to: {RANDOM_SEED}")
     
     # Verify write permissions immediately
     try:
@@ -118,6 +131,7 @@ def main():
         filename_train = []
         for pattern in args.data:
             filename_train.extend(glob.glob(pattern))
+        filename_train = sorted(filename_train)
     else:
         raise RuntimeError("No training data provided! Use --data argument.")
 

@@ -18,6 +18,7 @@ Trained_models/full_run/
 Trained_models/pretrained/inference_results
 Trained_models/dense_test
 Trained_models/dense_full
+Trained_models/dense_part
 
 # data
 Testdata/dense_test

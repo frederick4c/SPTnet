@@ -39,9 +39,17 @@ which python
 pip list
 python -c "import sys; print(sys.path)"
 
-echo "Starting SPTnet training on CSD3 Ampere node..."
+export SPT_TRAIN_SCRIPT="${SPT_TRAIN_SCRIPT:-SPTnet_training_cli.py}"
 
-~/envs/SPTnet/bin/python SPTnet_training_cli.py \
+if [[ ! -f "$SPT_TRAIN_SCRIPT" ]]; then
+    echo "ERROR: training script '$SPT_TRAIN_SCRIPT' was not found in $(pwd)"
+    exit 1
+fi
+
+echo "Starting SPTnet training on CSD3 Ampere node..."
+echo "Training script: $SPT_TRAIN_SCRIPT"
+
+~/envs/SPTnet/bin/python "$SPT_TRAIN_SCRIPT" \
     --model-dir ./Trained_models/ \
     --data "./TestData/eg_trainingvideos_*.mat" \
     --gpus 1
