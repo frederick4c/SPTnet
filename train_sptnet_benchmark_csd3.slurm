@@ -38,6 +38,7 @@ ulimit -n 65536
 
 export SPT_TRAIN_SCRIPT="${SPT_TRAIN_SCRIPT:-SPTnet_training_cli.py}"
 export SPT_TRAIN_DATA="${SPT_TRAIN_DATA:-./TrainData/*.mat}"
+export SPT_MAX_FILES="${SPT_MAX_FILES:-0}"
 export SPT_RUN_NAME="${SPT_RUN_NAME:-benchmark}"
 export SPT_MODEL_BASE_DIR="${SPT_MODEL_BASE_DIR:-./Trained_models/benchmarks}"
 export SPT_MODEL_DIR="${SPT_MODEL_DIR:-$SPT_MODEL_BASE_DIR/$SPT_RUN_NAME}"
@@ -54,15 +55,27 @@ if [[ ! -f "$SPT_TRAIN_SCRIPT" ]]; then
     exit 1
 fi
 
-match_count=$(
-    python - "$SPT_TRAIN_DATA" <<'PY'
+train_data_list=$(mktemp)
+trap 'rm -f "$train_data_list"' EXIT
+
+python - "$SPT_TRAIN_DATA" "$SPT_MAX_FILES" > "$train_data_list" <<'PY'
 import glob
 import sys
 
 matches = sorted(glob.glob(sys.argv[1]))
-print(len(matches))
+max_files = int(sys.argv[2])
+if max_files > 0:
+    matches = matches[:max_files]
+for path in matches:
+    print(path)
 PY
-)
+
+train_data_files=()
+while IFS= read -r path; do
+    train_data_files+=("$path")
+done < "$train_data_list"
+
+match_count=${#train_data_files[@]}
 
 if [[ "$match_count" -eq 0 ]]; then
     echo "ERROR: training data pattern matched no files: $SPT_TRAIN_DATA"
@@ -79,7 +92,10 @@ echo "Host: $(hostname)"
 echo "Submit directory: $SLURM_SUBMIT_DIR"
 echo "Training script: $SPT_TRAIN_SCRIPT"
 echo "Training data pattern: $SPT_TRAIN_DATA"
+echo "Max files: $SPT_MAX_FILES"
 echo "Matched training files: $match_count"
+echo "First training file: ${train_data_files[0]}"
+echo "Last training file: ${train_data_files[$((match_count - 1))]}"
 echo "Run name: $SPT_RUN_NAME"
 echo "Model dir: $SPT_MODEL_DIR"
 echo "Batch size: $SPT_BATCH_SIZE"
@@ -101,7 +117,7 @@ echo "Benchmark wall-clock start: $wall_start_human"
 set +e
 /usr/bin/time -v ~/envs/SPTnet/bin/python "$SPT_TRAIN_SCRIPT" \
     --model-dir "$SPT_MODEL_DIR" \
-    --data "$SPT_TRAIN_DATA" \
+    --data "${train_data_files[@]}" \
     --gpus "$SPT_GPUS" \
     --batch-size "$SPT_BATCH_SIZE" \
     --learning-rate "$SPT_LEARNING_RATE" \
@@ -130,7 +146,10 @@ fi
     echo "job_id=${SLURM_JOB_ID:-unknown}"
     echo "train_script=$SPT_TRAIN_SCRIPT"
     echo "train_data=$SPT_TRAIN_DATA"
+    echo "max_files=$SPT_MAX_FILES"
     echo "matched_training_files=$match_count"
+    echo "first_training_file=${train_data_files[0]}"
+    echo "last_training_file=${train_data_files[$((match_count - 1))]}"
     echo "model_dir=$SPT_MODEL_DIR"
     echo "wall_start=$wall_start_human"
     echo "wall_end=$wall_end_human"
