@@ -245,6 +245,20 @@ def _prediction_alignment_score(video_frames, obj_est, xy_est, threshold=0.5, mi
     return float(np.mean(video_frames[ts[valid], yi[valid], xi[valid]]))
 
 
+def _swap_scaled_xy_for_frame(xy_est, frame_shape):
+    """
+    Swap prediction x/y channels while preserving non-square frame scaling.
+    """
+    height, width = map(float, frame_shape[-2:])
+    x_norm = xy_est[..., 0] / (width / 2.0) - 1.0
+    y_norm = xy_est[..., 1] / (height / 2.0) - 1.0
+
+    swapped = np.empty_like(xy_est, dtype=np.float32)
+    swapped[..., 0] = (y_norm + 1.0) * (width / 2.0)
+    swapped[..., 1] = (x_norm + 1.0) * (height / 2.0)
+    return swapped
+
+
 def _calibrate_prediction_xy(video_frames, obj_est, xy_est, threshold=0.5, min_track_len=1):
     """
     Try (swap/no-swap) x (delta {-1,0,+1}) and pick best prediction alignment.
@@ -256,7 +270,7 @@ def _calibrate_prediction_xy(video_frames, obj_est, xy_est, threshold=0.5, min_t
     best_xy = xy_est
 
     for swap in (False, True):
-        base = xy_est[..., [1, 0]] if swap else xy_est
+        base = _swap_scaled_xy_for_frame(xy_est, video_frames.shape[-2:]) if swap else xy_est
         for delta in (-1.0, 0.0, 1.0):
             cand = base + delta
             score = _prediction_alignment_score(
@@ -269,6 +283,52 @@ def _calibrate_prediction_xy(video_frames, obj_est, xy_est, threshold=0.5, min_t
                 best_xy = cand
 
     return best_xy, best_swap, best_delta, best_score
+
+
+def suppress_duplicate_tracks(obj_est, xy_est, threshold=0.5, min_track_len=1,
+                              radius=3.0, min_overlap=3):
+    """
+    Suppress query tracks that repeatedly sit on top of a stronger track.
+
+    This does not modify coordinates or saved inference files. It returns a
+    filtered confidence array where duplicate query slots are set to zero.
+    """
+    obj_filtered = np.array(obj_est, copy=True)
+    xy = np.asarray(xy_est)
+    active = obj_filtered > threshold
+    track_lengths = active.sum(axis=0)
+    valid_tracks = track_lengths >= min_track_len
+
+    scores = np.zeros(obj_filtered.shape[1], dtype=float)
+    for qi in range(obj_filtered.shape[1]):
+        if valid_tracks[qi]:
+            scores[qi] = float(np.nansum(obj_filtered[active[:, qi], qi]))
+
+    keep = np.zeros(obj_filtered.shape[1], dtype=bool)
+    suppressed = np.zeros(obj_filtered.shape[1], dtype=bool)
+
+    for qi in np.argsort(scores)[::-1]:
+        if scores[qi] <= 0 or suppressed[qi]:
+            continue
+
+        duplicate = False
+        for kept_q in np.where(keep)[0]:
+            overlap = active[:, qi] & active[:, kept_q]
+            if int(overlap.sum()) < min_overlap:
+                continue
+
+            dist = np.linalg.norm(xy[overlap, qi, :] - xy[overlap, kept_q, :], axis=1)
+            if np.nanmedian(dist) <= radius:
+                duplicate = True
+                break
+
+        if duplicate:
+            suppressed[qi] = True
+        else:
+            keep[qi] = True
+
+    obj_filtered[:, suppressed] = 0.0
+    return obj_filtered, keep, suppressed
 
 
 def _gt_alignment_score(video_frames, gt_pos_list, offset=32.0, swap_xy=False):
@@ -409,15 +469,35 @@ def load_test_data(mat_path):
     return videos, gt_positions, gt_H, gt_C, f
 
 
-def load_inference_results(mat_path):
+def _scale_xy_to_frame(xy_raw, frame_shape=None):
     """
-    Load SPTnet inference output .mat file and apply the same transforms
-    as Visualize_SPTnet_Outputs.m (lines 25-28).
+    Convert model-normalized xy predictions from [-1, 1] to display pixels.
+
+    The model was trained with coordinates normalized by the training image
+    size, so the default/legacy mapping is 64x64. Scaling these coordinates to
+    a larger test frame is only a display transform; it is not equivalent to
+    running inference on the larger field of view.
+    """
+    if frame_shape is None:
+        height, width = 64.0, 64.0
+    else:
+        height, width = map(float, frame_shape[-2:])
+
+    xy_scaled = np.empty_like(xy_raw, dtype=np.float32)
+    xy_scaled[..., 0] = (xy_raw[..., 0] + 1.0) * (width / 2.0)
+    xy_scaled[..., 1] = (xy_raw[..., 1] + 1.0) * (height / 2.0)
+    return xy_scaled
+
+
+def load_inference_results(mat_path, frame_shape=None, scale_to_frame=False):
+    """
+    Load SPTnet inference output .mat file and convert predictions to the
+    array layout used by the notebook visualizer.
 
     Returns (all N-indexed, ready to slice by video index)
     -------
     obj_est : (N, T, Q)       — detection confidence per frame per query
-    xy_est  : (N, T, Q, 2)   — predicted pixel coords in [0, 64]
+    xy_est  : (N, T, Q, 2)   — predicted pixel coords
     est_H   : (N, Q)          — Hurst exponent
     est_C   : (N, Q)          — diffusion coefficient (scaled by 0.5)
     """
@@ -428,8 +508,13 @@ def load_inference_results(mat_path):
     est_H   = np.squeeze(data['estimation_H'])   # → (N, Q) or (Q,)
     est_C   = np.squeeze(data['estimation_C'])   # → (N, Q) or (Q,)
 
-    # MATLAB line 25: estimation_xy_scale = estimation_xy*32+32
-    xy_scaled = xy_raw * 32 + 32                 # pixel coords [0, 64]
+    if scale_to_frame:
+        # Display-only compatibility mode for experiments; this does not make
+        # the underlying full-frame inference equivalent to tiled 64x64 inference.
+        xy_scaled = _scale_xy_to_frame(xy_raw, frame_shape=frame_shape)
+    else:
+        # Original MATLAB visualizer: estimation_xy*32+32 for 64x64 inputs.
+        xy_scaled = _scale_xy_to_frame(xy_raw, frame_shape=None)
 
     # MATLAB line 26: estimation_C = estimation_C*0.5
     est_C = est_C * 0.5
@@ -478,7 +563,7 @@ def build_animation(video_frames, gt_pos_list, gt_h_list, gt_c_list,
     gt_h_list    : list of float or None
     gt_c_list    : list of float or None
     obj_est      : (T, Q)
-    xy_est       : (T, Q, 2)  — pixel coords already scaled to [0,64]
+    xy_est       : (T, Q, 2)  — pixel coords already scaled to video frame
     est_H        : (Q,)
     est_C        : (Q,)  — already * 0.5
     threshold    : detection threshold
@@ -616,7 +701,9 @@ def build_animation(video_frames, gt_pos_list, gt_h_list, gt_c_list,
 def show_video(test_data_path, results_path,
                video_idx=0, threshold=0.90, min_track_len=5, interval=200,
                gt_data_path=None, gt_video_idx=None, swap_gt_xy_for_tiff=True,
-               auto_match_gt_video=True):
+               auto_match_gt_video=True, deduplicate=True,
+               duplicate_radius=3.0, duplicate_min_overlap=3,
+               scale_predictions_to_frame=False):
     """
     Load data and return a FuncAnimation for one video.
 
@@ -640,6 +727,15 @@ def show_video(test_data_path, results_path,
     threshold      : float — detection confidence threshold
     min_track_len  : int  — min frames active to display a predicted track
     interval       : int  — ms between frames in the animation
+    deduplicate    : bool — suppress duplicate query tracks before display
+    duplicate_radius : float
+        Pixel radius for considering two query tracks duplicates.
+    duplicate_min_overlap : int
+        Minimum shared active frames before duplicate suppression can apply.
+    scale_predictions_to_frame : bool
+        Display-only option. If False, use the legacy 64x64 coordinate mapping
+        used by the trained model and MATLAB visualizer. If True, stretch
+        coordinates to the displayed frame size.
     gt_data_path   : str|None
         Optional GT `.mat` when `test_data_path` is TIFF.
     gt_video_idx   : int|None
@@ -734,7 +830,11 @@ def show_video(test_data_path, results_path,
         print(f"  {N} videos, shape per video: {videos.shape[1:]}")
 
     print(f"Loading inference results from {results_path}...")
-    obj_est, xy_est, est_H, est_C = load_inference_results(results_path)
+    obj_est, xy_est, est_H, est_C = load_inference_results(
+        results_path,
+        frame_shape=videos[0].shape[-2:],
+        scale_to_frame=scale_predictions_to_frame,
+    )
     num_queries = obj_est.shape[2]
     print(f"  obj_estimation: {obj_est.shape}  (N, T, Q)")
     print(f"  estimation_xy:  {xy_est.shape}  (N, T, Q, 2)")
@@ -792,14 +892,32 @@ def show_video(test_data_path, results_path,
         f"D[{np.nanmin(c_row):.4f}, {np.nanmax(c_row):.4f}]"
     )
 
+    obj_view = obj_est[res_idx]
+    xy_view = xy_est[res_idx]
+
     xy_view, pred_swap, pred_delta, pred_score = _calibrate_prediction_xy(
-        videos[src_idx], obj_est[res_idx], xy_est[res_idx],
+        videos[src_idx], obj_view, xy_view,
         threshold=threshold, min_track_len=min_track_len
     )
     print(
         f"  Prediction mapping: swap_xy={pred_swap}, delta={pred_delta:+.1f} px "
         f"(alignment score={pred_score:.3f})"
     )
+
+    if deduplicate:
+        obj_view, keep_tracks, suppressed_tracks = suppress_duplicate_tracks(
+            obj_view,
+            xy_view,
+            threshold=threshold,
+            min_track_len=min_track_len,
+            radius=duplicate_radius,
+            min_overlap=duplicate_min_overlap,
+        )
+        print(
+            f"  Duplicate suppression: kept {int(keep_tracks.sum())} track(s), "
+            f"suppressed {int(suppressed_tracks.sum())} duplicate query slot(s) "
+            f"(radius={duplicate_radius:g}px, min_overlap={duplicate_min_overlap})."
+        )
 
     print(
         f"Building animation for test clip {src_idx} "
@@ -810,7 +928,7 @@ def show_video(test_data_path, results_path,
         gt_pos_list=gt_pos_view,
         gt_h_list=gt_h_view,
         gt_c_list=gt_c_view,
-        obj_est=obj_est[res_idx],
+        obj_est=obj_view,
         xy_est=xy_view,
         est_H=est_H[res_idx],
         est_C=est_C[res_idx],
@@ -877,6 +995,10 @@ def show_tiff_result_by_index(
     threshold=0.90,
     min_track_len=5,
     interval=200,
+    deduplicate=True,
+    duplicate_radius=3.0,
+    duplicate_min_overlap=3,
+    scale_predictions_to_frame=False,
 ):
     """
     Convenience wrapper for per-file TIFF + result MAT workflows.
@@ -906,6 +1028,10 @@ def show_tiff_result_by_index(
         threshold=threshold,
         min_track_len=min_track_len,
         interval=interval,
+        deduplicate=deduplicate,
+        duplicate_radius=duplicate_radius,
+        duplicate_min_overlap=duplicate_min_overlap,
+        scale_predictions_to_frame=scale_predictions_to_frame,
         gt_data_path=gt_data_path,
         gt_video_idx=gt_video_idx,
         auto_match_gt_video=auto_match_gt_video,

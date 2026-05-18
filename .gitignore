@@ -24,3 +24,6 @@ Trained_models/dense_part
 Testdata/dense_test
 TrainData
 DenseTrain
+RealData
+testdata.tif
+split_tiff_windows.py
