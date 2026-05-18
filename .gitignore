@@ -27,3 +27,5 @@ DenseTrain
 RealData
 testdata.tif
 split_tiff_windows.py
+*.csv
+*.pt

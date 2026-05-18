@@ -20,6 +20,7 @@ import torch
 
 sys.path.append(os.path.dirname(__file__))
 from track_diffusion_common import (  # noqa: E402
+    FEATURE_SETS,
     build_step_features,
     collate_tracks,
     expand_paths,
@@ -50,6 +51,12 @@ def parse_args():
         action="store_true",
         default=True,
         help="Treat saved estimation_C as C / max_diff, which is how the current SPTnet head is trained.",
+    )
+    parser.add_argument(
+        "--feature-set",
+        default="",
+        choices=[""] + sorted(FEATURE_SETS),
+        help="Override checkpoint feature set. Empty means use checkpoint metadata.",
     )
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
@@ -152,6 +159,12 @@ def main():
     device = choose_device(args.device)
     model, checkpoint = load_teacher_checkpoint(args.checkpoint, device)
     max_diff = float(checkpoint["max_diff"])
+    feature_set = args.feature_set or checkpoint.get("feature_set", "basic")
+    if model.input_size != len(FEATURE_SETS[feature_set]):
+        raise ValueError(
+            f"Checkpoint expects {model.input_size} input features, but feature_set={feature_set!r} "
+            f"has {len(FEATURE_SETS[feature_set])}. Use the checkpoint feature set or retrain."
+        )
     result_paths = expand_paths(args.results)
 
     all_records: List[Dict[str, object]] = []
@@ -179,6 +192,7 @@ def main():
                 positions,
                 valid_mask,
                 coord_scale=args.pred_coord_scale,
+                feature_set=feature_set,
                 training=False,
             )
             teacher_d = model(features, step_mask).cpu().numpy() * max_diff

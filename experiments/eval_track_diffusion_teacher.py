@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 
 sys.path.append(os.path.dirname(__file__))
 from track_diffusion_common import (  # noqa: E402
+    FEATURE_SETS,
     SimulatedTrackDataset,
     build_step_features,
     collate_tracks,
@@ -36,6 +37,12 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--min-valid-frames", type=int, default=2)
     parser.add_argument("--coord-scale", type=float, default=0.0, help="Override coordinate scale.")
+    parser.add_argument(
+        "--feature-set",
+        default="",
+        choices=[""] + sorted(FEATURE_SETS),
+        help="Override checkpoint feature set. Empty means use checkpoint metadata.",
+    )
     parser.add_argument("--noise-px", type=float, default=0.0, help="Evaluation localization noise stress test.")
     parser.add_argument("--frame-drop-prob", type=float, default=0.0, help="Evaluation frame dropout stress test.")
     parser.add_argument("--truncate-frames", type=int, default=0, help="Evaluation crop length stress test.")
@@ -58,6 +65,12 @@ def main():
     device = choose_device(args.device)
     model, checkpoint = load_teacher_checkpoint(args.checkpoint, device)
     max_diff = float(checkpoint["max_diff"])
+    feature_set = args.feature_set or checkpoint.get("feature_set", "basic")
+    if model.input_size != len(FEATURE_SETS[feature_set]):
+        raise ValueError(
+            f"Checkpoint expects {model.input_size} input features, but feature_set={feature_set!r} "
+            f"has {len(FEATURE_SETS[feature_set])}. Use the checkpoint feature set or retrain."
+        )
 
     dataset = SimulatedTrackDataset(args.data, min_valid_frames=args.min_valid_frames)
     coord_scale = args.coord_scale or float(checkpoint.get("coord_scale") or (float(dataset.image_size) / 2.0))
@@ -75,6 +88,7 @@ def main():
                 positions,
                 valid_mask,
                 coord_scale=coord_scale,
+                feature_set=feature_set,
                 noise_px=args.noise_px,
                 frame_drop_prob=args.frame_drop_prob,
                 truncate_min_frames=args.truncate_frames,

@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.dirname(__file__))
 from track_diffusion_common import (  # noqa: E402
+    FEATURE_SETS,
     SimulatedTrackDataset,
     TrackDiffusionEstimator,
     build_step_features,
@@ -50,6 +51,12 @@ def parse_args():
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--feature-set",
+        default="physics_v1",
+        choices=sorted(FEATURE_SETS),
+        help="Track features given to the teacher. physics_v1 adds MSD-informed squared-step features.",
+    )
     parser.add_argument("--min-valid-frames", type=int, default=2)
     parser.add_argument("--noise-px", type=float, default=0.0, help="Training-only localization noise augmentation.")
     parser.add_argument("--frame-drop-prob", type=float, default=0.0, help="Training-only random frame dropout.")
@@ -101,6 +108,7 @@ def run_epoch(model, loader, optimizer, args, device, coord_scale, training):
             positions,
             valid_mask,
             coord_scale=coord_scale,
+            feature_set=args.feature_set,
             noise_px=args.noise_px,
             frame_drop_prob=args.frame_drop_prob,
             truncate_min_frames=args.truncate_min_frames,
@@ -165,6 +173,7 @@ def main():
         "hidden_size": args.hidden_size,
         "num_layers": args.num_layers,
         "dropout": args.dropout,
+        "input_size": len(FEATURE_SETS[args.feature_set]),
     }
     model = TrackDiffusionEstimator(**model_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -216,6 +225,8 @@ def main():
                     "model_config": model_config,
                     "max_diff": args.max_diff,
                     "coord_scale": coord_scale,
+                    "feature_set": args.feature_set,
+                    "feature_names": FEATURE_SETS[args.feature_set],
                     "best_val_mae": best_val,
                     "epoch": epoch,
                     "data": dataset.data_paths,

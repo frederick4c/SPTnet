@@ -16,7 +16,16 @@ python experiments/train_track_diffusion_teacher.py \
 ```
 
 The model sees only simulated ground-truth `traceposition` tracks and learns to
-predict `Clabel`. It does not see images.
+predict `Clabel`. It does not see images. By default it uses physics-informed
+per-step features:
+
+```text
+dx, dy, dx^2, dy^2, r^2, step_length, valid_step
+```
+
+where `r^2 = dx^2 + dy^2`, the quantity behind classical
+mean-squared-displacement diffusion estimates. To reproduce the original
+raw-displacement teacher, add `--feature-set basic`.
 
 Useful stress-test augmentations:
 

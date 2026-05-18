@@ -17,6 +17,12 @@ import torch
 import torch.nn as nn
 
 
+FEATURE_SETS = {
+    "basic": ("dx", "dy", "valid_step"),
+    "physics_v1": ("dx", "dy", "dx2", "dy2", "r2", "step_length", "valid_step"),
+}
+
+
 @dataclass
 class TrackRecord:
     """One ground-truth trajectory and its scalar simulation labels."""
@@ -190,6 +196,7 @@ def build_step_features(
     positions: torch.Tensor,
     valid_mask: torch.Tensor,
     coord_scale: float,
+    feature_set: str = "physics_v1",
     noise_px: float = 0.0,
     frame_drop_prob: float = 0.0,
     truncate_min_frames: int = 0,
@@ -198,13 +205,18 @@ def build_step_features(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Convert absolute positions to displacement features plus a valid-step mask.
 
-    Parameters use pixel units before `coord_scale`. The returned feature tensor
-    has shape `[B, T-1, 3]`: normalized `dx`, normalized `dy`, and a binary flag
-    indicating whether that step is valid. Optional noise, frame dropout, and
-    truncation are used to stress-test how robustly a teacher can infer diffusion
-    from imperfect tracks.
+    Parameters use pixel units before `coord_scale`. With the default
+    `physics_v1` feature set, the returned tensor has shape `[B, T-1, 7]`:
+    normalized `dx`, normalized `dy`, `dx^2`, `dy^2`, squared step length
+    `r^2`, step length, and a binary flag indicating whether that step is valid.
+    These features expose the mean-squared-displacement signal used by classical
+    diffusion estimators. Optional noise, frame dropout, and truncation are used
+    to stress-test how robustly a teacher can infer diffusion from imperfect
+    tracks.
     """
 
+    if feature_set not in FEATURE_SETS:
+        raise ValueError(f"Unknown feature_set {feature_set!r}; choose from {sorted(FEATURE_SETS)}")
     if positions.ndim != 3 or positions.shape[-1] != 2:
         raise ValueError(f"positions must have shape [B,T,2], got {tuple(positions.shape)}")
 
@@ -236,20 +248,32 @@ def build_step_features(
     displacement = pos[:, 1:] - pos[:, :-1]
     displacement = displacement / float(coord_scale)
     displacement = torch.where(step_mask.unsqueeze(-1), displacement, torch.zeros_like(displacement))
-    features = torch.cat([displacement, step_mask.float().unsqueeze(-1)], dim=-1)
+    valid_feature = step_mask.float().unsqueeze(-1)
+
+    if feature_set == "basic":
+        features = torch.cat([displacement, valid_feature], dim=-1)
+    else:
+        dx = displacement[..., 0:1]
+        dy = displacement[..., 1:2]
+        dx2 = dx.square()
+        dy2 = dy.square()
+        r2 = dx2 + dy2
+        step_length = torch.sqrt(r2.clamp_min(0.0) + 1e-12)
+        features = torch.cat([dx, dy, dx2, dy2, r2, step_length, valid_feature], dim=-1)
     return features, step_mask
 
 
 class TrackDiffusionEstimator(nn.Module):
     """Small GRU teacher that maps displacement sequences to normalized diffusion."""
 
-    def __init__(self, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.1):
+    def __init__(self, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.1, input_size: int = 7):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.dropout = dropout
+        self.input_size = input_size
         self.gru = nn.GRU(
-            input_size=3,
+            input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0.0,
@@ -290,6 +314,9 @@ def load_teacher_checkpoint(path: str, device: torch.device) -> Tuple[TrackDiffu
 
     checkpoint = torch.load(path, map_location=device)
     config = checkpoint.get("model_config", {})
+    if "input_size" not in config and "model_state" in checkpoint:
+        config = dict(config)
+        config["input_size"] = int(checkpoint["model_state"]["gru.weight_ih_l0"].shape[1])
     model = TrackDiffusionEstimator(**config).to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()
